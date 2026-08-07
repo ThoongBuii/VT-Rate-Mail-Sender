@@ -203,94 +203,51 @@ html, body {
   align-items: end;
 }
 .attach-row .grow { flex: 1; }
-
-.compose-panel .tox-tinymce {
-  border-radius: 8px !important;
-  border-color: var(--line) !important;
-  flex: 1;
-  min-height: 320px;
-}
-.compose-panel .tox-editor-header {
-  display: none !important;
-}
-.compose-panel iframe { background: #fff; }
-
-.paste-hint {
-  margin: 0 0 8px;
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.45;
-}
-.paste-hint b { color: var(--text); }
-
-.compose-actions {
-  margin-bottom: 8px;
-}
-
-.paste-zone {
-  position: relative;
-  flex: 1;
-  min-height: 360px;
-  display: flex;
-  flex-direction: column;
-  outline: none;
+.btn.icon-btn {
+  min-width: 40px;
+  height: 38px;
+  padding: 0 12px;
+  font-size: 22px;
+  line-height: 1;
+  background: #f3f5f8;
+  color: #5a6b7d;
   border: 1px solid var(--line);
   border-radius: 8px;
-  overflow: hidden;
-  background: #fff;
+  cursor: pointer;
 }
-.paste-zone:focus-within {
-  border-color: var(--blue);
-  box-shadow: 0 0 0 2px rgba(31, 106, 165, 0.18);
+.btn.icon-btn:hover {
+  background: #ffe8e8;
+  color: var(--danger);
+  border-color: #f0b4b4;
 }
-.compose-frame {
+
+.compose-editor {
   flex: 1;
-  width: 100%;
   min-height: 360px;
-  border: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
   background: #fff;
-  pointer-events: none; /* không cho iframe nuốt click/paste */
-}
-.paste-catcher {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  opacity: 0.02; /* vẫn nhận focus/paste; gần như trong suốt */
-  color: transparent;
-  caret-color: transparent;
-  outline: none;
-  overflow: hidden;
-  font-size: 1px;
-  line-height: 1;
-  padding: 0;
-  margin: 0;
-  border: 0;
-  background: transparent;
-}
-.paste-placeholder {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 24px;
-  color: var(--muted);
+  padding: 12px 14px;
+  font-family: Calibri, "Segoe UI", Arial, sans-serif;
   font-size: 14px;
-  background: rgba(247, 249, 252, 0.96);
+  line-height: 1.4;
+  color: #222;
+  outline: none;
+}
+.compose-editor:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(31, 106, 165, 0.15);
+}
+.compose-editor:empty:before {
+  content: attr(data-placeholder);
+  color: var(--muted);
   pointer-events: none;
 }
-.paste-placeholder.hidden {
-  display: none;
-}
+.compose-editor table { border-collapse: collapse; }
+.compose-editor img { max-width: 100%; height: auto; }
 
-.btn.compact {
-  padding: 8px 12px;
-  height: fit-content;
-  align-self: end;
-}
-
+.compose-panel iframe { background: #fff; }
 
 .preview-panel {
   padding: 12px;

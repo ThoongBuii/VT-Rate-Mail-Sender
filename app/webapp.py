@@ -347,12 +347,12 @@ def api_attachment():
     return jsonify({"ok": True, "path": STATE.attachment, "name": name})
 
 
-@flask_app.post("/api/attachment/clear")
+@flask_app.delete("/api/attachment")
 def api_attachment_clear():
     STATE.attachment = ""
     STATE.apply_compose_to_mails()
     STATE.save_config()
-    return jsonify({"ok": True, "name": ""})
+    return jsonify({"ok": True, "path": "", "name": ""})
 
 
 @flask_app.post("/api/validate")

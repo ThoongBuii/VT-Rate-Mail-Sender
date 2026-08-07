@@ -29,7 +29,6 @@ SUGGESTED_TEMPLATE_HTML = """
   <p>Dear {{account_name}},</p>
   <p>Good day!</p>
   <p>Please find our latest VT Rate Quotation for <b>{{agency_company}}</b>.</p>
-  <p><i>(Hãy bấm “Soạn trong Outlook” để dán bảng giá và chữ ký mail giống New Mail.)</i></p>
   <p style="color:#c0392b;"><b><i>*** Remark: Due to current market changes, Carrier may issue unforeseen notices. Rate &amp; space are subject to availability at the time of booking. ***</i></b></p>
   <p>Thank you for your kind support.</p>
   <p>Best regards,</p>

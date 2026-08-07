@@ -2,8 +2,7 @@ let state = null;
 let pollTimer = null;
 let currentView = "compose";
 let previewIndex = 0;
-/** HTML template gốc (từ Outlook sync) — không qua TinyMCE để giữ chữ ký. */
-let templateHtml = "";
+let saveTimer = null;
 
 async function api(path, options = {}) {
   const res = await fetch(path, options);
@@ -24,6 +23,28 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
+function composeEl() {
+  return document.getElementById("composeEditor");
+}
+
+function setComposeHtml(html) {
+  composeEl().innerHTML = html || "";
+}
+
+function getComposeHtml() {
+  const html = composeEl().innerHTML || "";
+  // contenteditable trống thường còn <br>
+  if (!html.replace(/<br\s*\/?>/gi, "").replace(/&nbsp;/gi, "").trim()) return "";
+  return html;
+}
+
+function scheduleSaveCompose() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveCompose().catch(() => {});
+  }, 500);
+}
+
 function frameDoc(html) {
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
     <style>
@@ -32,16 +53,6 @@ function frameDoc(html) {
       table{border-collapse:collapse}
       img{max-width:100%;height:auto}
     </style></head><body>${html || ""}</body></html>`;
-}
-
-function setComposeHtml(html) {
-  templateHtml = html || "";
-  document.getElementById("composeFrame").srcdoc = frameDoc(templateHtml);
-  document.getElementById("pastePlaceholder").classList.toggle("hidden", !!templateHtml.trim());
-}
-
-function getComposeHtml() {
-  return templateHtml || "";
 }
 
 function setView(view) {
@@ -79,12 +90,16 @@ function renderList() {
   });
 }
 
+function setAttachmentUi(path) {
+  document.getElementById("attachmentName").value = path
+    ? String(path).split(/[/\\]/).pop()
+    : "";
+}
+
 function applyState(s, forceHtml = false) {
   state = s;
   document.getElementById("subject").value = s.subject || "";
-  document.getElementById("attachmentName").value = s.attachment
-    ? s.attachment.split(/[/\\]/).pop()
-    : "";
+  setAttachmentUi(s.attachment || "");
   document.getElementById("delayMin").value = s.delay_min;
   document.getElementById("delayMax").value = s.delay_max;
   document.getElementById("stats").textContent =
@@ -94,7 +109,7 @@ function applyState(s, forceHtml = false) {
   } else {
     setOutlookStatus("Outlook: chưa kết nối");
   }
-  if (forceHtml || !templateHtml) {
+  if (forceHtml || !getComposeHtml()) {
     setComposeHtml(s.template_html || "");
   }
   previewIndex = Math.min(previewIndex, Math.max(0, (s.mails?.length || 1) - 1));
@@ -228,38 +243,13 @@ document.getElementById("btnOutlook").onclick = async () => {
   }
 };
 
-async function pasteFromOutlookClipboard(browserHtml) {
-  const res = await api("/api/clipboard/paste", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ html: browserHtml || "" }),
-  });
-  setComposeHtml(res.template_html || "");
-  if (res.state) applyState(res.state, true);
-  await saveCompose();
-  const catcher = document.getElementById("pasteCatcher");
-  if (catcher) catcher.innerHTML = "";
-}
-
-function focusPasteCatcher() {
-  const catcher = document.getElementById("pasteCatcher");
-  catcher.focus();
-  // đặt caret vào catcher để Ctrl+V luôn vào đúng chỗ
-  try {
-    const sel = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(catcher);
-    range.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(range);
-  } catch (_) {}
-}
-
-const pasteZone = document.getElementById("pasteZone");
-const pasteCatcher = document.getElementById("pasteCatcher");
-
-pasteZone.addEventListener("click", () => focusPasteCatcher());
-pasteCatcher.addEventListener("paste", async (ev) => {
+const editor = composeEl();
+editor.addEventListener("input", scheduleSaveCompose);
+editor.addEventListener("blur", () => {
+  saveCompose().catch(() => {});
+});
+editor.addEventListener("paste", async (ev) => {
+  // Ưu tiên clipboard Windows (Outlook CF_HTML + ảnh) — giữ đúng tỉ lệ/font/chữ ký
   ev.preventDefault();
   ev.stopPropagation();
   let browserHtml = "";
@@ -267,63 +257,34 @@ pasteCatcher.addEventListener("paste", async (ev) => {
     browserHtml = ev.clipboardData?.getData("text/html") || "";
   } catch (_) {}
   try {
-    await pasteFromOutlookClipboard(browserHtml);
+    const res = await api("/api/clipboard/paste", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ html: browserHtml || "" }),
+    });
+    setComposeHtml(res.template_html || "");
+    if (res.state) {
+      state = res.state;
+      setAttachmentUi(state.attachment || "");
+      renderList();
+    }
+    await saveCompose();
   } catch (e) {
-    alert(e.message);
+    // Fallback: dán plain text để vẫn soạn được
+    const text = ev.clipboardData?.getData("text/plain") || "";
+    if (text) {
+      document.execCommand("insertText", false, text);
+      scheduleSaveCompose();
+    } else {
+      alert(e.message);
+    }
   }
 });
-// Chặn gõ chữ vào catcher (chỉ dùng để nhận paste)
-pasteCatcher.addEventListener("beforeinput", (ev) => {
-  if (ev.inputType && String(ev.inputType).startsWith("insertFromPaste")) return;
-  ev.preventDefault();
-});
-pasteCatcher.addEventListener("keydown", (ev) => {
-  const isPaste = (ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "v";
-  if (isPaste) return; // để sự kiện paste chạy
-  // Cho phép Ctrl+A / Cmd để không bị kẹt
-  if ((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "a") return;
-  if (ev.key === "Tab") return;
-  ev.preventDefault();
-});
-
-document.addEventListener("keydown", async (ev) => {
-  if (currentView !== "compose") return;
-  const isPaste = (ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "v";
-  if (!isPaste) return;
-  const tag = (ev.target && ev.target.tagName) || "";
-  if (tag === "INPUT" || tag === "TEXTAREA") return;
-  // Nếu đang focus catcher thì để handler paste của catcher xử lý
-  if (ev.target === pasteCatcher || pasteCatcher.contains(ev.target)) return;
-  ev.preventDefault();
-  try {
-    await pasteFromOutlookClipboard("");
-  } catch (e) {
-    alert(e.message);
-  }
-});
-
-document.getElementById("btnPasteNow").onclick = async () => {
-  focusPasteCatcher();
-  try {
-    await pasteFromOutlookClipboard("");
-  } catch (e) {
-    alert(
-      e.message +
-        "\n\nNếu clipboard trống: trong Outlook Ctrl+A → Ctrl+C, rồi bấm lại nút này (hoặc Ctrl+V)."
-    );
-  }
-};
-
-document.getElementById("btnClearBody").onclick = async () => {
-  if (!confirm("Xóa toàn bộ nội dung đã dán?")) return;
-  setComposeHtml("");
-  await saveCompose();
-};
 
 document.getElementById("btnClearAttach").onclick = async () => {
   try {
-    await api("/api/attachment/clear", { method: "POST" });
-    document.getElementById("attachmentName").value = "";
+    await api("/api/attachment", { method: "DELETE" });
+    setAttachmentUi("");
     if (state) state.attachment = "";
   } catch (e) {
     alert(e.message);
@@ -355,7 +316,8 @@ document.getElementById("fileAttach").onchange = async (ev) => {
   fd.append("file", file);
   try {
     const res = await api("/api/attachment", { method: "POST", body: fd });
-    document.getElementById("attachmentName").value = res.name;
+    setAttachmentUi(res.path || res.name);
+    if (state) state.attachment = res.path || "";
   } catch (e) {
     alert(e.message);
   } finally {
@@ -392,7 +354,7 @@ document.getElementById("btnStart").onclick = async () => {
       delay_max: Number(document.getElementById("delayMax").value || 20),
     };
     if (!getComposeHtml().trim()) {
-      alert("Chưa có nội dung mail. Hãy copy từ Outlook New Mail rồi Ctrl+V vào khung soạn.");
+      alert("Chưa có nội dung mail. Hãy soạn hoặc Ctrl+V từ Outlook vào khung soạn.");
       return;
     }
     if (!confirm(`Đã kiểm tra Preview?\nGửi Semi-Auto · Delay ${payload.delay_min}–${payload.delay_max}s`))
