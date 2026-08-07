@@ -25,14 +25,42 @@ html, body {
   justify-content: space-between;
   align-items: center;
   gap: 16px;
-  padding: 14px 20px;
+  padding: 12px 20px;
   background: var(--navy);
   color: #fff;
 }
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.brand-logo {
+  height: 40px;
+  width: auto;
+  max-width: 220px;
+  object-fit: contain;
+  background: #fff;
+  border-radius: 8px;
+  padding: 4px 8px;
+  flex-shrink: 0;
+}
+.brand-text {
+  min-width: 0;
+}
 .topbar h1 {
   margin: 0;
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
+  line-height: 1.2;
+}
+.brand-sub {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: #b7c9dc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .topbar-right {
   display: flex;
