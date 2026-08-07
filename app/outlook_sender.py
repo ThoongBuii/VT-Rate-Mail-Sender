@@ -521,7 +521,7 @@ tell application "Microsoft Outlook"
   set subject of msg to "{esc(subject)}"
   try
     set existingContent to content of msg
-    set content of msg to htmlText & return & return & existingContent
+    set content of msg to htmlText & existingContent
   on error
     try
       set content of msg to htmlText
@@ -561,8 +561,35 @@ end tell
         return None
 
     @staticmethod
+    def _strip_leading_empty_html(html: str) -> str:
+        """Bỏ đoạn trống đầu chữ ký Outlook (paragraph rỗng / &nbsp; / <br>)."""
+        import re
+
+        s = html or ""
+        patterns = (
+            r"^\s*<(p|div)[^>]*>\s*(?:<br\s*/?>|&nbsp;|\xa0|\s|"
+            r"<o:p[^>]*>\s*(?:&nbsp;|\xa0)?\s*</o:p>)*</\1>\s*",
+            r"^\s*<br\s*/?>\s*",
+            r"^\s*(?:&nbsp;|\xa0)+\s*",
+            r"^\s*<o:p[^>]*>\s*(?:&nbsp;|\xa0)?\s*</o:p>\s*",
+        )
+        changed = True
+        while changed:
+            changed = False
+            for pat in patterns:
+                new = re.sub(pat, "", s, count=1, flags=re.I)
+                if new != s:
+                    s = new
+                    changed = True
+                    break
+        return s
+
+    @staticmethod
     def _merge_body_with_outlook_signature(body_html: str, signature_html: str) -> str:
-        """Chèn nội dung app vào đầu New Mail đã có chữ ký Outlook (cùng MailItem)."""
+        """
+        Chèn nội dung app sát đầu chữ ký Outlook — không thêm khoảng cách mặc định.
+        Khoảng trống chỉ còn nếu user tự Enter trong app.
+        """
         import re
 
         body = (body_html or "").strip()
@@ -572,13 +599,14 @@ end tell
         if not sig:
             return body
 
-        # Outlook hay trả HTML đầy đủ — chèn sau <body ...>
+        # Outlook hay trả HTML đầy đủ — chèn sát sau <body ...>, bỏ dòng trống đầu chữ ký
         m = re.search(r"<body[^>]*>", sig, flags=re.I)
         if m:
             i = m.end()
-            return sig[:i] + body + "<br><br>" + sig[i:]
+            rest = OutlookDesktopSender._strip_leading_empty_html(sig[i:])
+            return sig[:i] + body + rest
 
-        return body + "<br><br>" + sig
+        return body + OutlookDesktopSender._strip_leading_empty_html(sig)
 
     def _send_windows(
         self,
