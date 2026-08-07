@@ -227,17 +227,109 @@ html, body {
   border-color: #f0b4b4;
 }
 
+.format-bar {
+  border: 1px solid var(--line);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: linear-gradient(180deg, #f7f8fa 0%, #eef1f5 100%);
+  padding: 6px 8px 4px;
+}
+.format-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.fmt-select {
+  height: 28px;
+  border: 1px solid #c5cdd8;
+  border-radius: 4px;
+  background: #fff;
+  font-size: 12px;
+  color: #222;
+  padding: 0 6px;
+}
+.fmt-font { min-width: 140px; max-width: 180px; }
+.fmt-size { width: 58px; }
+.fmt-btn {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #222;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fmt-btn:hover {
+  background: #fff;
+  border-color: #c5cdd8;
+}
+.fmt-btn.active {
+  background: #dceaf7;
+  border-color: #9fc2e0;
+}
+.fmt-sep {
+  width: 1px;
+  height: 20px;
+  background: #cfd6e0;
+  margin: 0 4px;
+}
+.fmt-color {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.fmt-color:hover {
+  background: #fff;
+  border-color: #c5cdd8;
+}
+.fmt-color input[type="color"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  border: 0;
+  padding: 0;
+}
+.fmt-color-icon {
+  font-size: 13px;
+  font-weight: 700;
+  pointer-events: none;
+}
+.fmt-hl {
+  font-size: 11px;
+  font-weight: 700;
+  background: #ffe066;
+  padding: 1px 3px;
+  border-radius: 2px;
+}
+.fmt-hint {
+  margin: 4px 2px 0;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
 .compose-editor {
   flex: 1;
   min-height: 360px;
   overflow: auto;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0 0 8px 8px;
   background: #fff;
   padding: 12px 14px;
-  font-family: Calibri, "Segoe UI", Arial, sans-serif;
-  font-size: 14px;
-  line-height: 1.4;
+  font-family: Aptos, Calibri, "Segoe UI", Arial, sans-serif;
+  font-size: 12pt;
+  line-height: 1.35;
   color: #222;
   outline: none;
 }
@@ -252,6 +344,8 @@ html, body {
 }
 .compose-editor table { border-collapse: collapse; }
 .compose-editor img { max-width: 100%; height: auto; }
+.compose-editor p { margin: 0 0 0.6em; }
+.compose-editor p:last-child { margin-bottom: 0; }
 
 .compose-panel iframe { background: #fff; }
 

@@ -65,6 +65,61 @@
         </div>
       </div>
 
+      <div class="format-bar" id="formatBar" role="toolbar" aria-label="Định dạng văn bản">
+        <div class="format-row">
+          <select id="fmtFont" class="fmt-select fmt-font" title="Font chữ">
+            <option value="Aptos">Aptos</option>
+            <option value="Aptos Display">Aptos Display</option>
+            <option value="Calibri">Calibri</option>
+            <option value="Calibri Light">Calibri Light</option>
+            <option value="Arial">Arial</option>
+            <option value="Times New Roman">Times New Roman</option>
+            <option value="Georgia">Georgia</option>
+            <option value="Segoe UI">Segoe UI</option>
+            <option value="Tahoma">Tahoma</option>
+            <option value="Verdana">Verdana</option>
+            <option value="Courier New">Courier New</option>
+          </select>
+          <select id="fmtSize" class="fmt-select fmt-size" title="Cỡ chữ (pt)">
+            <option value="8">8</option>
+            <option value="9">9</option>
+            <option value="10">10</option>
+            <option value="11">11</option>
+            <option value="12" selected>12</option>
+            <option value="14">14</option>
+            <option value="16">16</option>
+            <option value="18">18</option>
+            <option value="20">20</option>
+            <option value="24">24</option>
+            <option value="28">28</option>
+            <option value="36">36</option>
+          </select>
+          <span class="fmt-sep"></span>
+          <button type="button" class="fmt-btn" data-fmt="bold" title="Đậm (Ctrl+B)"><b>B</b></button>
+          <button type="button" class="fmt-btn" data-fmt="italic" title="Nghiêng (Ctrl+I)"><i>I</i></button>
+          <button type="button" class="fmt-btn" data-fmt="underline" title="Gạch dưới (Ctrl+U)"><u>U</u></button>
+          <span class="fmt-sep"></span>
+          <label class="fmt-color" title="Màu chữ">
+            <span class="fmt-color-icon" style="border-bottom:3px solid #c00000">A</span>
+            <input type="color" id="fmtForeColor" value="#000000" />
+          </label>
+          <label class="fmt-color" title="Highlight">
+            <span class="fmt-color-icon fmt-hl">ab</span>
+            <input type="color" id="fmtHilite" value="#ffff00" />
+          </label>
+          <span class="fmt-sep"></span>
+          <button type="button" class="fmt-btn" data-fmt="justifyLeft" title="Căn trái">L</button>
+          <button type="button" class="fmt-btn" data-fmt="justifyCenter" title="Căn giữa">C</button>
+          <button type="button" class="fmt-btn" data-fmt="justifyRight" title="Căn phải">R</button>
+          <button type="button" class="fmt-btn" data-fmt="justifyFull" title="Căn đều">J</button>
+          <span class="fmt-sep"></span>
+          <button type="button" class="fmt-btn" data-fmt="insertUnorderedList" title="Bullet">• List</button>
+          <button type="button" class="fmt-btn" data-fmt="insertOrderedList" title="Number">1. List</button>
+          <button type="button" class="fmt-btn" data-fmt="removeFormat" title="Xóa định dạng">Clear</button>
+        </div>
+        <p class="fmt-hint muted">Font mặc định Aptos 12pt (khớp Outlook New Mail). Chọn đoạn chữ rồi chỉnh trên thanh công cụ.</p>
+      </div>
+
       <div
         id="composeEditor"
         class="compose-editor"

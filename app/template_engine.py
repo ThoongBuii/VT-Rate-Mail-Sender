@@ -23,15 +23,15 @@ VAR_MAP = {
 
 SUGGESTED_SUBJECT = "VT Rate Quotation – {{agency_company}}"
 
-# HTML gợi ý — chỉ nội dung mail; chữ ký mặc định Outlook gắn khi gửi
+# HTML gợi ý — Aptos 12pt (Outlook New Mail); chữ ký mặc định Outlook gắn khi gửi
 SUGGESTED_TEMPLATE_HTML = """
-<div style="font-family:Calibri,Arial,sans-serif;font-size:14px;color:#222;line-height:1.45;">
-  <p>Dear {{account_name}},</p>
-  <p>Good day!</p>
-  <p>Please find our latest VT Rate Quotation for <b>{{agency_company}}</b>.</p>
-  <p style="color:#c0392b;"><b><i>*** Remark: Due to current market changes, Carrier may issue unforeseen notices. Rate &amp; space are subject to availability at the time of booking. ***</i></b></p>
-  <p>Thank you for your kind support.</p>
-  <p>Best regards,</p>
+<div style="font-family:Aptos,Calibri,Arial,sans-serif;font-size:12pt;color:#222;line-height:1.35;">
+  <p style="margin:0 0 0.6em;">Dear {{account_name}},</p>
+  <p style="margin:0 0 0.6em;">Good day!</p>
+  <p style="margin:0 0 0.6em;">Please find our latest VT Rate Quotation for <b>{{agency_company}}</b>.</p>
+  <p style="margin:0 0 0.6em;color:#c0392b;"><b><i>*** Remark: Due to current market changes, Carrier may issue unforeseen notices. Rate &amp; space are subject to availability at the time of booking. ***</i></b></p>
+  <p style="margin:0 0 0.6em;">Thank you for your kind support.</p>
+  <p style="margin:0;">Best regards,</p>
 </div>
 """.strip()
 
@@ -79,8 +79,8 @@ def text_to_html(text: str) -> str:
     for para in paragraphs:
         lines = "<br>\n".join(para.split("\n"))
         parts.append(
-            f"<p style='margin:0 0 12px 0;font-family:Calibri,Arial,sans-serif;"
-            f"font-size:14px;color:#222;line-height:1.45;'>{lines}</p>"
+            f"<p style='margin:0 0 12px 0;font-family:Aptos,Calibri,Arial,sans-serif;"
+            f"font-size:12pt;color:#222;line-height:1.35;'>{lines}</p>"
         )
     return "<div>" + "".join(parts) + "</div>"
 
@@ -110,7 +110,7 @@ def wrap_preview_document(inner_html: str) -> str:
 <html><head><meta charset="utf-8">
 <style>
   body {{ margin: 12px; background: #fff; color: #222;
-         font-family: Calibri, Arial, sans-serif; font-size: 14px; }}
+         font-family: Aptos, Calibri, Arial, sans-serif; font-size: 12pt; }}
   table {{ border-collapse: collapse; }}
   img {{ max-width: 100%; height: auto; }}
 </style></head><body>{inner_html}</body></html>"""

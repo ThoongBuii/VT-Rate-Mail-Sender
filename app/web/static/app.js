@@ -27,15 +27,38 @@ function composeEl() {
   return document.getElementById("composeEditor");
 }
 
+const DEFAULT_FONT = "Aptos";
+const DEFAULT_SIZE_PT = "12";
+const OUTLOOK_FONT_STACK = 'Aptos, Calibri, Arial, sans-serif';
+
 function setComposeHtml(html) {
   composeEl().innerHTML = html || "";
 }
 
 function getComposeHtml() {
-  const html = composeEl().innerHTML || "";
-  // contenteditable trống thường còn <br>
+  const ed = composeEl();
+  let html = ed.innerHTML || "";
   if (!html.replace(/<br\s*\/?>/gi, "").replace(/&nbsp;/gi, "").trim()) return "";
-  return html;
+  return normalizeHtmlForOutlook(html);
+}
+
+/** Bọc / chuẩn hóa font inline để Outlook New Mail không fallback font hệ thống. */
+function normalizeHtmlForOutlook(html) {
+  const trimmed = (html || "").trim();
+  if (!trimmed) return "";
+  // Đã có wrapper font Aptos/Calibri → giữ nguyên
+  if (/font-family\s*:\s*[^;]*Aptos/i.test(trimmed) || /font-family\s*:\s*[^;]*Calibri/i.test(trimmed)) {
+    // Đổi px phổ biến của trình duyệt sang pt gần đúng cho Outlook (12px≈9pt… 16px≈12pt)
+    return trimmed.replace(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi, (_, px) => {
+      const pt = Math.round((Number(px) * 72) / 96 * 10) / 10;
+      return `font-size:${pt}pt`;
+    });
+  }
+  return (
+    `<div style="font-family:${OUTLOOK_FONT_STACK};font-size:${DEFAULT_SIZE_PT}pt;color:#222;line-height:1.35;">` +
+    trimmed +
+    `</div>`
+  );
 }
 
 function scheduleSaveCompose() {
@@ -49,10 +72,149 @@ function frameDoc(html) {
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
     <style>
       html,body{margin:0;padding:12px;background:#fff;color:#222}
-      body{font-family:Calibri,"Segoe UI",Arial,sans-serif;font-size:14px;line-height:1.4}
+      body{font-family:Aptos,Calibri,"Segoe UI",Arial,sans-serif;font-size:12pt;line-height:1.35}
       table{border-collapse:collapse}
       img{max-width:100%;height:auto}
+      p{margin:0 0 0.6em}
     </style></head><body>${html || ""}</body></html>`;
+}
+
+function focusEditor() {
+  const ed = composeEl();
+  ed.focus();
+}
+
+function runFormat(cmd, value = null) {
+  focusEditor();
+  try {
+    document.execCommand("styleWithCSS", false, true);
+  } catch (_) {}
+  document.execCommand(cmd, false, value);
+  scheduleSaveCompose();
+  syncFormatToolbar();
+}
+
+function wrapSelectionWithSpan(styleText) {
+  focusEditor();
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  if (range.collapsed) {
+    // Áp dụng kiểu cho chữ sắp gõ: chèn span rỗng + caret vào trong
+    const span = document.createElement("span");
+    span.setAttribute("style", styleText);
+    span.appendChild(document.createTextNode("\u200b"));
+    range.insertNode(span);
+    range.setStart(span.firstChild, 1);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    scheduleSaveCompose();
+    return;
+  }
+  try {
+    const span = document.createElement("span");
+    span.setAttribute("style", styleText);
+    range.surroundContents(span);
+  } catch (_) {
+    const frag = range.extractContents();
+    const span = document.createElement("span");
+    span.setAttribute("style", styleText);
+    span.appendChild(frag);
+    range.insertNode(span);
+  }
+  scheduleSaveCompose();
+  syncFormatToolbar();
+}
+
+function applyFontFamily(name) {
+  const font = name || DEFAULT_FONT;
+  focusEditor();
+  try {
+    document.execCommand("styleWithCSS", false, true);
+  } catch (_) {}
+  // fontName tạo font-family inline — Outlook đọc tốt
+  const ok = document.execCommand("fontName", false, font);
+  if (!ok) {
+    wrapSelectionWithSpan(`font-family:${font}, Calibri, Arial, sans-serif`);
+  }
+  scheduleSaveCompose();
+  syncFormatToolbar();
+}
+
+function applyFontSizePt(pt) {
+  const size = String(pt || DEFAULT_SIZE_PT);
+  wrapSelectionWithSpan(`font-size:${size}pt`);
+}
+
+function syncFormatToolbar() {
+  const map = {
+    bold: "bold",
+    italic: "italic",
+    underline: "underline",
+    justifyLeft: "justifyLeft",
+    justifyCenter: "justifyCenter",
+    justifyRight: "justifyRight",
+    justifyFull: "justifyFull",
+  };
+  document.querySelectorAll(".fmt-btn[data-fmt]").forEach((btn) => {
+    const cmd = btn.getAttribute("data-fmt");
+    if (!map[cmd] && cmd !== "bold" && cmd !== "italic" && cmd !== "underline") {
+      btn.classList.remove("active");
+      return;
+    }
+    if (["bold", "italic", "underline", "justifyLeft", "justifyCenter", "justifyRight", "justifyFull"].includes(cmd)) {
+      try {
+        btn.classList.toggle("active", document.queryCommandState(cmd));
+      } catch (_) {
+        btn.classList.remove("active");
+      }
+    }
+  });
+}
+
+function initFormatToolbar() {
+  const bar = document.getElementById("formatBar");
+  if (!bar) return;
+
+  // Giữ selection khi click toolbar
+  bar.addEventListener("mousedown", (ev) => {
+    if (ev.target.closest("select, input")) return;
+    ev.preventDefault();
+  });
+
+  bar.querySelectorAll(".fmt-btn[data-fmt]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const cmd = btn.getAttribute("data-fmt");
+      runFormat(cmd);
+    });
+  });
+
+  document.getElementById("fmtFont").addEventListener("change", (ev) => {
+    applyFontFamily(ev.target.value);
+  });
+  document.getElementById("fmtSize").addEventListener("change", (ev) => {
+    applyFontSizePt(ev.target.value);
+  });
+  document.getElementById("fmtForeColor").addEventListener("input", (ev) => {
+    runFormat("foreColor", ev.target.value);
+  });
+  document.getElementById("fmtHilite").addEventListener("input", (ev) => {
+    // hiliteColor (WebKit) / backColor
+    focusEditor();
+    try {
+      document.execCommand("styleWithCSS", false, true);
+    } catch (_) {}
+    if (!document.execCommand("hiliteColor", false, ev.target.value)) {
+      document.execCommand("backColor", false, ev.target.value);
+    }
+    scheduleSaveCompose();
+  });
+
+  const ed = composeEl();
+  ed.addEventListener("keyup", syncFormatToolbar);
+  ed.addEventListener("mouseup", syncFormatToolbar);
+  ed.addEventListener("focus", syncFormatToolbar);
 }
 
 function insertHtmlAtCursor(html) {
@@ -405,6 +567,7 @@ document.getElementById("btnStop").onclick = async () => {
 };
 
 (async function boot() {
+  initFormatToolbar();
   const s = await api("/api/state");
   applyState(s, true);
   startPolling();
