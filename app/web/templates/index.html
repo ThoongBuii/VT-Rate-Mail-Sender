@@ -61,16 +61,23 @@
             Chọn file
             <input id="fileAttach" type="file" hidden />
           </label>
+          <button id="btnClearAttach" class="btn ghost compact" type="button">Xóa</button>
         </div>
       </div>
 
       <p class="paste-hint">
-        Trong <b>Outlook New Mail</b>: chọn thân mail (<b>Ctrl+A</b>) → <b>Ctrl+C</b>.
-        Quay lại khung bên dưới → <b>Ctrl+V</b> (app đọc clipboard Windows để giữ font + ảnh chữ ký).
+        Trong <b>Outlook New Mail</b>: <b>Ctrl+A</b> → <b>Ctrl+C</b>.
+        Quay lại đây: click khung bên dưới (hoặc nút <b>Dán Outlook</b>) rồi <b>Ctrl+V</b>.
       </p>
+      <div class="send-row compose-actions">
+        <button id="btnPasteNow" class="btn dark" type="button">Dán Outlook (Ctrl+V)</button>
+        <button id="btnClearBody" class="btn ghost" type="button">Xóa nội dung</button>
+      </div>
       <div id="pasteZone" class="paste-zone" tabindex="0" title="Click vào đây rồi Ctrl+V">
-        <iframe id="composeFrame" class="compose-frame" title="Nội dung mail"></iframe>
-        <div id="pastePlaceholder" class="paste-placeholder">Click vào đây rồi Ctrl+V để dán từ Outlook</div>
+        <iframe id="composeFrame" class="compose-frame" title="Nội dung mail" tabindex="-1"></iframe>
+        <!-- Lớp nhận paste: iframe bên dưới chỉ để xem, không ăn focus -->
+        <div id="pasteCatcher" class="paste-catcher" contenteditable="true" spellcheck="false"></div>
+        <div id="pastePlaceholder" class="paste-placeholder">Click vào đây rồi Ctrl+V — hoặc bấm “Dán Outlook”</div>
       </div>
       <div class="send-row">
         <button id="btnToPreview" class="btn primary" type="button">Sang Preview →</button>

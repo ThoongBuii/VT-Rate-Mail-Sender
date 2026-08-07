@@ -237,11 +237,29 @@ async function pasteFromOutlookClipboard(browserHtml) {
   setComposeHtml(res.template_html || "");
   if (res.state) applyState(res.state, true);
   await saveCompose();
+  const catcher = document.getElementById("pasteCatcher");
+  if (catcher) catcher.innerHTML = "";
+}
+
+function focusPasteCatcher() {
+  const catcher = document.getElementById("pasteCatcher");
+  catcher.focus();
+  // đặt caret vào catcher để Ctrl+V luôn vào đúng chỗ
+  try {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(catcher);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch (_) {}
 }
 
 const pasteZone = document.getElementById("pasteZone");
-pasteZone.addEventListener("click", () => pasteZone.focus());
-pasteZone.addEventListener("paste", async (ev) => {
+const pasteCatcher = document.getElementById("pasteCatcher");
+
+pasteZone.addEventListener("click", () => focusPasteCatcher());
+pasteCatcher.addEventListener("paste", async (ev) => {
   ev.preventDefault();
   ev.stopPropagation();
   let browserHtml = "";
@@ -254,13 +272,28 @@ pasteZone.addEventListener("paste", async (ev) => {
     alert(e.message);
   }
 });
-// Bắt Ctrl+V toàn trang khi đang tab Soạn (iframe có thể nuốt focus)
+// Chặn gõ chữ vào catcher (chỉ dùng để nhận paste)
+pasteCatcher.addEventListener("beforeinput", (ev) => {
+  if (ev.inputType && String(ev.inputType).startsWith("insertFromPaste")) return;
+  ev.preventDefault();
+});
+pasteCatcher.addEventListener("keydown", (ev) => {
+  const isPaste = (ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "v";
+  if (isPaste) return; // để sự kiện paste chạy
+  // Cho phép Ctrl+A / Cmd để không bị kẹt
+  if ((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "a") return;
+  if (ev.key === "Tab") return;
+  ev.preventDefault();
+});
+
 document.addEventListener("keydown", async (ev) => {
   if (currentView !== "compose") return;
   const isPaste = (ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "v";
   if (!isPaste) return;
   const tag = (ev.target && ev.target.tagName) || "";
   if (tag === "INPUT" || tag === "TEXTAREA") return;
+  // Nếu đang focus catcher thì để handler paste của catcher xử lý
+  if (ev.target === pasteCatcher || pasteCatcher.contains(ev.target)) return;
   ev.preventDefault();
   try {
     await pasteFromOutlookClipboard("");
@@ -268,6 +301,34 @@ document.addEventListener("keydown", async (ev) => {
     alert(e.message);
   }
 });
+
+document.getElementById("btnPasteNow").onclick = async () => {
+  focusPasteCatcher();
+  try {
+    await pasteFromOutlookClipboard("");
+  } catch (e) {
+    alert(
+      e.message +
+        "\n\nNếu clipboard trống: trong Outlook Ctrl+A → Ctrl+C, rồi bấm lại nút này (hoặc Ctrl+V)."
+    );
+  }
+};
+
+document.getElementById("btnClearBody").onclick = async () => {
+  if (!confirm("Xóa toàn bộ nội dung đã dán?")) return;
+  setComposeHtml("");
+  await saveCompose();
+};
+
+document.getElementById("btnClearAttach").onclick = async () => {
+  try {
+    await api("/api/attachment/clear", { method: "POST" });
+    document.getElementById("attachmentName").value = "";
+    if (state) state.attachment = "";
+  } catch (e) {
+    alert(e.message);
+  }
+};
 
 document.getElementById("fileImport").onchange = async (ev) => {
   const file = ev.target.files?.[0];

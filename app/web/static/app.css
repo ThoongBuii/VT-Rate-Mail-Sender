@@ -223,6 +223,10 @@ html, body {
 }
 .paste-hint b { color: var(--text); }
 
+.compose-actions {
+  margin-bottom: 8px;
+}
+
 .paste-zone {
   position: relative;
   flex: 1;
@@ -230,24 +234,43 @@ html, body {
   display: flex;
   flex-direction: column;
   outline: none;
-  border: 1px dashed transparent;
+  border: 1px solid var(--line);
   border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
 }
-.paste-zone:focus {
+.paste-zone:focus-within {
   border-color: var(--blue);
-  box-shadow: 0 0 0 2px rgba(31, 106, 165, 0.15);
+  box-shadow: 0 0 0 2px rgba(31, 106, 165, 0.18);
 }
 .compose-frame {
   flex: 1;
   width: 100%;
   min-height: 360px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 0;
   background: #fff;
+  pointer-events: none; /* không cho iframe nuốt click/paste */
+}
+.paste-catcher {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  opacity: 0.02; /* vẫn nhận focus/paste; gần như trong suốt */
+  color: transparent;
+  caret-color: transparent;
+  outline: none;
+  overflow: hidden;
+  font-size: 1px;
+  line-height: 1;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
 }
 .paste-placeholder {
   position: absolute;
   inset: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -255,12 +278,17 @@ html, body {
   padding: 24px;
   color: var(--muted);
   font-size: 14px;
-  background: rgba(247, 249, 252, 0.92);
-  border-radius: 8px;
+  background: rgba(247, 249, 252, 0.96);
   pointer-events: none;
 }
 .paste-placeholder.hidden {
   display: none;
+}
+
+.btn.compact {
+  padding: 8px 12px;
+  height: fit-content;
+  align-self: end;
 }
 
 
