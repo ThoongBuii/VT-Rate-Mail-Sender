@@ -112,6 +112,5 @@ def wrap_preview_document(inner_html: str) -> str:
   body {{ margin: 12px; background: #fff; color: #222;
          font-family: Calibri, Arial, sans-serif; font-size: 14px; }}
   table {{ border-collapse: collapse; }}
-  td, th {{ border: 1px solid #999; padding: 4px 8px; }}
-  img {{ max-width: 100%; }}
+  img {{ max-width: 100%; height: auto; }}
 </style></head><body>{inner_html}</body></html>"""

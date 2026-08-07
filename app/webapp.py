@@ -262,31 +262,35 @@ def api_outlook_open():
 @flask_app.post("/api/clipboard/paste")
 def api_clipboard_paste():
     """
-    Paste chuẩn từ Outlook: đọc CF_HTML Windows + nhúng ảnh file:// tạm.
-    Không phụ thuộc clipboard của WebView (hay mất ảnh chữ ký).
+    Đọc CF_HTML Windows + nhúng ảnh.
+    replace=true: ghi đè toàn bộ template.
+    replace=false (mặc định): chỉ trả HTML đã làm sạch để chèn tại con trỏ.
     """
     try:
         from .clipboard_html import clipboard_html_for_compose
 
         data = request.get_json(force=True, silent=True) or {}
         browser_html = str(data.get("html") or "")
+        replace = bool(data.get("replace"))
         html = clipboard_html_for_compose(browser_html)
         if not html.strip():
             return jsonify(
                 {
                     "ok": False,
-                    "error": "Clipboard trống. Trong Outlook: chọn toàn bộ thân mail (Ctrl+A) → Copy (Ctrl+C), rồi quay lại app bấm Ctrl+V.",
+                    "error": "Clipboard trống. Trong Outlook: chọn nội dung → Ctrl+C, rồi Ctrl+V trong khung soạn.",
                 }
             ), 400
-        STATE.template_html = html
-        STATE.apply_compose_to_mails()
-        STATE.save_config()
+        if replace:
+            STATE.template_html = html
+            STATE.apply_compose_to_mails()
+            STATE.save_config()
         return jsonify(
             {
                 "ok": True,
-                "template_html": STATE.template_html,
-                "message": "Đã dán nội dung Outlook (HTML hệ thống + ảnh).",
-                "state": STATE.snapshot(),
+                "html": html,
+                "template_html": html,
+                "replaced": replace,
+                "state": STATE.snapshot() if replace else None,
             }
         )
     except Exception as exc:  # noqa: BLE001

@@ -55,6 +55,28 @@ function frameDoc(html) {
     </style></head><body>${html || ""}</body></html>`;
 }
 
+function insertHtmlAtCursor(html) {
+  const ed = composeEl();
+  ed.focus();
+  // insertHTML hỗ trợ Ctrl+Z của trình duyệt / WebView
+  const ok = document.execCommand("insertHTML", false, html);
+  if (!ok) {
+    // Fallback Selection API
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount) {
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      const tip = range.createContextualFragment(html);
+      range.insertNode(tip);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } else {
+      ed.insertAdjacentHTML("beforeend", html);
+    }
+  }
+}
+
 function setView(view) {
   currentView = view;
   document.getElementById("viewCompose").classList.toggle("hidden", view !== "compose");
@@ -249,7 +271,7 @@ editor.addEventListener("blur", () => {
   saveCompose().catch(() => {});
 });
 editor.addEventListener("paste", async (ev) => {
-  // Ưu tiên clipboard Windows (Outlook CF_HTML + ảnh) — giữ đúng tỉ lệ/font/chữ ký
+  // Chèn tại con trỏ (không ghi đè Dear…), ưu tiên CF_HTML Windows
   ev.preventDefault();
   ev.stopPropagation();
   let browserHtml = "";
@@ -260,17 +282,11 @@ editor.addEventListener("paste", async (ev) => {
     const res = await api("/api/clipboard/paste", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ html: browserHtml || "" }),
+      body: JSON.stringify({ html: browserHtml || "", replace: false }),
     });
-    setComposeHtml(res.template_html || "");
-    if (res.state) {
-      state = res.state;
-      setAttachmentUi(state.attachment || "");
-      renderList();
-    }
-    await saveCompose();
+    insertHtmlAtCursor(res.html || res.template_html || "");
+    scheduleSaveCompose();
   } catch (e) {
-    // Fallback: dán plain text để vẫn soạn được
     const text = ev.clipboardData?.getData("text/plain") || "";
     if (text) {
       document.execCommand("insertText", false, text);
