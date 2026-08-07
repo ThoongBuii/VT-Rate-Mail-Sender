@@ -23,6 +23,10 @@ xattr -cr "/Applications/VT Rate Mail Sender.app"
 3. Giải nén → chạy `VTRateMailSender.exe` (giữ nguyên cả thư mục)
 4. Cần Outlook desktop đã login + Microsoft Edge/WebView2
 
+> **Không xóa được thư mục / Outlook không mở:** đóng tab trình duyệt **không** đủ — app vẫn chạy nền.  
+> Task Manager → End task → `VTRateMailSender.exe` và `OUTLOOK.EXE`,  
+> hoặc chạy `scripts\stop-app-windows.bat` (trong repo / kèm bản phát hành).
+
 ### Excel danh bạ (4 cột)
 `Agency Company` · `Account Name` · `Account Mail` · `Mail cc`
 

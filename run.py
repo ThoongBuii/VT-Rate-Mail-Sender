@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import atexit
+import os
 import sys
 import socket
 import threading
@@ -34,8 +36,30 @@ def _safe_print(msg: str) -> None:
         print(msg.encode("ascii", errors="replace").decode("ascii"))
 
 
+def _force_exit(code: int = 0) -> None:
+    """Flask/WebView2 đôi khi giữ process sống sau khi đóng cửa sổ → khóa file trên Windows."""
+    try:
+        os._exit(code)
+    except Exception:  # noqa: BLE001
+        sys.exit(code)
+
+
+def _win_message(title: str, text: str) -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(0, text, title, 0x10)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main() -> None:
     _fix_stdio_encoding()
+    # Đảm bảo process thoát khi cửa sổ đóng (kể cả thread Flask còn treo)
+    atexit.register(lambda: None)
+
     from app.webapp import flask_app
 
     port = _free_port()
@@ -56,17 +80,39 @@ def main() -> None:
         if sys.platform == "win32":
             start_kwargs["gui"] = "edgechromium"
 
-        webview.create_window(
+        window = webview.create_window(
             "VT Rate Mail Sender",
             url,
             width=1320,
             height=860,
             min_size=(1050, 700),
         )
+
+        def _on_closed() -> None:
+            _force_exit(0)
+
+        try:
+            window.events.closed += _on_closed
+        except Exception:  # noqa: BLE001
+            pass
+
         webview.start(**start_kwargs)
+        _force_exit(0)
     except Exception as exc:  # noqa: BLE001
         _safe_print(f"Khong mo duoc pywebview ({exc}). Mo trinh duyet...")
         webbrowser.open(url)
+        _win_message(
+            "VT Rate Mail Sender",
+            "Khong mo duoc cua so desktop.\n"
+            "Da mo trinh duyet tam thoi.\n\n"
+            "De tat app (moi xoa/ghi de duoc file):\n"
+            "Task Manager → End task → VTRateMailSender.exe\n"
+            "hoac chay stop-app-windows.bat",
+        )
+        # Không giữ process vô hạn khi đóng gói — tránh khóa thư mục cài đặt
+        if getattr(sys, "frozen", False):
+            time.sleep(2)
+            _force_exit(1)
         _safe_print(f"Server: {url}")
         _safe_print("Nhan Ctrl+C de dung.")
         try:
