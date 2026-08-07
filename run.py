@@ -3,10 +3,22 @@
 
 from __future__ import annotations
 
+import sys
 import socket
 import threading
 import time
 import webbrowser
+
+
+def _fix_stdio_encoding() -> None:
+    """Windows console thường cp1252 — tránh crash khi in tiếng Việt."""
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _free_port() -> int:
@@ -15,7 +27,15 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _safe_print(msg: str) -> None:
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        print(msg.encode("ascii", errors="replace").decode("ascii"))
+
+
 def main() -> None:
+    _fix_stdio_encoding()
     from app.webapp import flask_app
 
     port = _free_port()
@@ -30,6 +50,12 @@ def main() -> None:
     try:
         import webview
 
+        # WinForms/pythonnet hay lỗi với PyInstaller + ZIP tải từ web.
+        # Edge WebView2 ổn định hơn trên Windows 10/11 (có Microsoft Edge).
+        start_kwargs: dict = {}
+        if sys.platform == "win32":
+            start_kwargs["gui"] = "edgechromium"
+
         webview.create_window(
             "VT Rate Mail Sender",
             url,
@@ -37,12 +63,12 @@ def main() -> None:
             height=860,
             min_size=(1050, 700),
         )
-        webview.start()
+        webview.start(**start_kwargs)
     except Exception as exc:  # noqa: BLE001
-        print(f"Không mở được pywebview ({exc}). Mở trình duyệt…")
+        _safe_print(f"Khong mo duoc pywebview ({exc}). Mo trinh duyet...")
         webbrowser.open(url)
-        print(f"Server: {url}")
-        print("Nhấn Ctrl+C để dừng.")
+        _safe_print(f"Server: {url}")
+        _safe_print("Nhan Ctrl+C de dung.")
         try:
             while True:
                 time.sleep(1)

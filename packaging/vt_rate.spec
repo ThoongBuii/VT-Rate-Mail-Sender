@@ -29,7 +29,14 @@ hiddenimports = [
 ]
 
 if sys.platform == "win32":
-    hiddenimports += ["win32com", "win32com.client", "pythoncom", "pywintypes"]
+    # Outlook COM + Edge WebView2 (tránh phụ thuộc winforms/pythonnet lúc runtime)
+    hiddenimports += [
+        "win32com",
+        "win32com.client",
+        "pythoncom",
+        "pywintypes",
+        "webview.platforms.edgechromium",
+    ]
 
 a = Analysis(
     [str(root / "run.py")],
