@@ -246,6 +246,8 @@ def api_preview():
             "attachment_ok": preview.get("attachment_ok", True),
             "attachment_error": preview.get("attachment_error") or "",
             "body_html": preview.get("body_html") or render_body_html(mail, ""),
+            "signature_note": preview.get("signature_note")
+            or "Chữ ký mặc định Outlook sẽ tự gắn khi gửi (giống New Mail).",
         }
     )
 

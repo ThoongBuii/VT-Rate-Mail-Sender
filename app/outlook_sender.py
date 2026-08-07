@@ -22,7 +22,8 @@ def uuid_hex() -> str:
 class OutlookDesktopSender:
     """
     Gửi qua Microsoft Outlook đã đăng nhập.
-    Template HTML (bảng giá + chữ ký) soạn bằng cửa sổ New Mail của Outlook.
+    App chỉ soạn nội dung (Dear / bảng giá / remark).
+    Khi gửi, Outlook New Mail tự gắn chữ ký mặc định của account.
     """
 
     def __init__(self, config: AppConfig):
@@ -142,6 +143,7 @@ class OutlookDesktopSender:
             "agency_company": mail.agency_company,
             "account_name": mail.account_name,
             "from": self.account_email or self.config.from_email or "Outlook default account",
+            "signature_note": "Chữ ký mặc định Outlook sẽ tự gắn khi gửi (giống New Mail).",
         }
 
     # -------------------- Template compose in Outlook New Mail --------------------
@@ -488,6 +490,10 @@ end tell
         body_html: str,
         attachment: Optional[Path],
     ) -> None:
+        """
+        Mac Classic Outlook: tạo outgoing message (Outlook có thể gắn chữ ký),
+        rồi chèn nội dung app phía trên — không thay thế toàn bộ content bằng body thuần.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             html_path = Path(tmp) / "body.html"
             html_path.write_text(body_html, encoding="utf-8")
@@ -511,11 +517,17 @@ set htmlText to do shell script "cat " & quoted form of htmlPath
 tell application "Microsoft Outlook"
   activate
   set msg to make new outgoing message
+  delay 0.4
   set subject of msg to "{esc(subject)}"
   try
-    set content of msg to htmlText
+    set existingContent to content of msg
+    set content of msg to htmlText & return & return & existingContent
   on error
-    set plain text content of msg to htmlText
+    try
+      set content of msg to htmlText
+    on error
+      set plain text content of msg to htmlText
+    end try
   end try
   make new to recipient at msg with properties {{email address:{{address:"{esc(to_addr)}"}}}}
   {cc_block}
@@ -534,6 +546,40 @@ end tell
                 "Outlook Mac gửi thất bại.\n" + (result.stderr or result.stdout or "")
             )
 
+    def _windows_pick_account(self, outlook: Any):
+        if not self.config.from_email:
+            return None
+        try:
+            namespace = outlook.GetNamespace("MAPI")
+            for i in range(1, namespace.Accounts.Count + 1):
+                acc = namespace.Accounts.Item(i)
+                smtp = getattr(acc, "SmtpAddress", "") or ""
+                if smtp.lower() == self.config.from_email.lower():
+                    return acc
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+
+    @staticmethod
+    def _merge_body_with_outlook_signature(body_html: str, signature_html: str) -> str:
+        """Chèn nội dung app vào đầu New Mail đã có chữ ký Outlook (cùng MailItem)."""
+        import re
+
+        body = (body_html or "").strip()
+        sig = (signature_html or "").strip()
+        if not body:
+            return sig
+        if not sig:
+            return body
+
+        # Outlook hay trả HTML đầy đủ — chèn sau <body ...>
+        m = re.search(r"<body[^>]*>", sig, flags=re.I)
+        if m:
+            i = m.end()
+            return sig[:i] + body + "<br><br>" + sig[i:]
+
+        return body + "<br><br>" + sig
+
     def _send_windows(
         self,
         to_addr: str,
@@ -545,23 +591,37 @@ end tell
         import win32com.client  # type: ignore
 
         outlook = win32com.client.Dispatch("Outlook.Application")
+        account = self._windows_pick_account(outlook)
+
+        # Một MailItem: Outlook gắn chữ ký → chèn body → gửi (giữ ảnh cid chữ ký)
         mail_item = outlook.CreateItem(0)
-        if self.config.from_email:
+        if account is not None:
             try:
-                namespace = outlook.GetNamespace("MAPI")
-                for i in range(1, namespace.Accounts.Count + 1):
-                    acc = namespace.Accounts.Item(i)
-                    smtp = getattr(acc, "SmtpAddress", "") or ""
-                    if smtp.lower() == self.config.from_email.lower():
-                        mail_item.SendUsingAccount = acc
-                        break
+                mail_item.SendUsingAccount = account
             except Exception:  # noqa: BLE001
                 pass
+
+        try:
+            insp = mail_item.GetInspector
+            try:
+                _ = insp.WordEditor
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            mail_item.Display(False)
+            time.sleep(0.35)
+        except Exception:  # noqa: BLE001
+            pass
+
+        existing = str(getattr(mail_item, "HTMLBody", None) or "")
+        mail_item.HTMLBody = self._merge_body_with_outlook_signature(body_html, existing)
+
         mail_item.To = to_addr
         if cc_list:
             mail_item.CC = "; ".join(cc_list)
         mail_item.Subject = subject
-        mail_item.HTMLBody = body_html
         if attachment:
             mail_item.Attachments.Add(str(attachment.resolve()))
         mail_item.Send()

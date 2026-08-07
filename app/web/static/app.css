@@ -177,6 +177,12 @@ html, body {
 .st-sending { color: var(--warn); }
 
 .compose-panel { padding: 12px; }
+.compose-hint {
+  margin: 6px 0 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.preview-meta .sig-note span { color: #5a6b7d; font-style: italic; }
 .compose-fields {
   display: grid;
   gap: 8px;

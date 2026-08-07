@@ -23,7 +23,7 @@ VAR_MAP = {
 
 SUGGESTED_SUBJECT = "VT Rate Quotation – {{agency_company}}"
 
-# HTML gợi ý — user sẽ dán bảng giá + chữ ký bằng Outlook New Mail
+# HTML gợi ý — chỉ nội dung mail; chữ ký mặc định Outlook gắn khi gửi
 SUGGESTED_TEMPLATE_HTML = """
 <div style="font-family:Calibri,Arial,sans-serif;font-size:14px;color:#222;line-height:1.45;">
   <p>Dear {{account_name}},</p>

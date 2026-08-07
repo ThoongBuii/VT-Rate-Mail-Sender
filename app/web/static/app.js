@@ -212,6 +212,7 @@ async function loadPreview(index) {
     <div><b>File</b><span>${att}</span></div>
     <div><b>Agency</b><span>${escapeHtml(p.agency_company || "")} · ${escapeHtml(p.account_name || "")}</span></div>
     <div><b>Status</b><span class="st st-${p.status}">${escapeHtml(p.status || "")}</span></div>
+    <div class="sig-note"><b>Chữ ký</b><span>${escapeHtml(p.signature_note || "Outlook gắn khi gửi")}</span></div>
   `;
   document.getElementById("previewFrame").srcdoc = frameDoc(p.body_html || "");
   renderList();

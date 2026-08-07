@@ -4,6 +4,9 @@
 
 > Bên trong app dùng engine cục bộ `127.0.0.1` — **không phải** website public. Không cần mở Chrome/Edge thủ công.
 
+**Soạn trong app:** Subject, attachment, nội dung (Dear / bảng giá / remark).  
+**Chữ ký:** không cần paste — khi gửi, Outlook New Mail tự gắn chữ ký mặc định của account (giống gửi tay).
+
 ## Dành cho nhân viên văn phòng
 
 ### macOS
