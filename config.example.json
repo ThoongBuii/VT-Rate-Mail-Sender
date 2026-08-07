@@ -1,0 +1,15 @@
+{
+  "smtp_host": "mail.vtlogisticsvn.com",
+  "smtp_port": 465,
+  "smtp_ssl": true,
+  "from_name": "Amber- VT Logistics",
+  "from_email": "overseas@vtlogisticsvn.com",
+  "smtp_username": "overseas@vtlogisticsvn.com",
+  "delay_min_seconds": 10,
+  "delay_max_seconds": 20,
+  "default_attachment_dir": "",
+  "signature_html": "",
+  "default_subject": "VT Rate Quotation – {{agency_company}}",
+  "default_attachment": "",
+  "default_template": ""
+}

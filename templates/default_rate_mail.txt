@@ -1,0 +1,13 @@
+Dear {{account_name}},
+
+Good day!
+
+Please find attached our latest VT Rate Quotation for {{agency_company}}.
+
+Kindly review and let us know if any adjustment is required.
+
+*** Remark: Due to current market changes, Carrier may issue unforeseen notices. Rate & space are subject to availability at the time of booking. ***
+
+Thank you for your kind support.
+
+Best regards,

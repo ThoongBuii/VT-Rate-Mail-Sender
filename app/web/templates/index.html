@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VT Rate Mail Sender</title>
+  <link rel="stylesheet" href="/static/app.css" />
+  <script src="https://cdn.jsdelivr.net/npm/tinymce@7.6.1/tinymce.min.js" referrerpolicy="origin"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>VT Rate Mail Sender</h1>
+    </div>
+    <div class="topbar-right">
+      <span id="outlookStatus" class="status">Outlook: chưa kết nối</span>
+      <button id="btnOutlook" class="btn primary" type="button">Mở Outlook</button>
+    </div>
+  </header>
+
+  <section class="toolbar">
+    <label class="file-btn">
+      Import Excel
+      <input id="fileImport" type="file" accept=".xlsx,.csv,.xls" hidden />
+    </label>
+    <button id="btnValidate" class="btn success" type="button">Kiểm tra</button>
+    <div class="tabs">
+      <button id="tabCompose" class="tab active" type="button" data-view="compose">Soạn</button>
+      <button id="tabPreview" class="tab" type="button" data-view="preview">Preview</button>
+    </div>
+    <label class="delay-label">Delay
+      <input id="delayMin" type="number" value="10" min="0" />
+      <span>–</span>
+      <input id="delayMax" type="number" value="20" min="0" />
+    </label>
+    <span id="stats" class="muted">0 agency</span>
+  </section>
+
+  <main class="layout">
+    <aside class="panel list-panel">
+      <h2>Danh sách agency</h2>
+      <div id="mailList" class="mail-list"></div>
+    </aside>
+
+    <section class="panel compose-panel" id="viewCompose">
+      <div class="compose-fields">
+        <label>Subject
+          <input id="subject" type="text" placeholder="VT Rate Quotation – {{agency_company}}" />
+        </label>
+        <div class="attach-row">
+          <label class="grow">Attachment
+            <input id="attachmentName" type="text" readonly placeholder="Chưa chọn file" />
+          </label>
+          <label class="file-btn compact">
+            Chọn file
+            <input id="fileAttach" type="file" hidden />
+          </label>
+        </div>
+      </div>
+      <textarea id="editor"></textarea>
+      <div class="send-row">
+        <button id="btnToPreview" class="btn primary" type="button">Sang Preview →</button>
+        <button id="btnSuggest" class="btn ghost" type="button">Nạp gợi ý</button>
+      </div>
+    </section>
+
+    <section class="panel preview-panel hidden" id="viewPreview">
+      <div class="preview-nav">
+        <button id="btnPrevMail" class="btn ghost" type="button">← Trước</button>
+        <span id="previewCounter" class="muted">0 / 0</span>
+        <button id="btnNextMail" class="btn ghost" type="button">Sau →</button>
+      </div>
+      <div class="preview-meta" id="previewMeta"></div>
+      <iframe id="previewFrame" class="preview-frame" title="Preview mail"></iframe>
+      <div class="send-row">
+        <button id="btnStart" class="btn dark" type="button">▶ Semi-Auto</button>
+        <button id="btnPause" class="btn warn" type="button" disabled>⏸ Pause</button>
+        <button id="btnStop" class="btn danger" type="button" disabled>⏹ Stop</button>
+        <button id="btnBackCompose" class="btn ghost" type="button">← Soạn lại</button>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-bar"><div id="progressFill"></div></div>
+        <div id="progressText" class="muted"></div>
+      </div>
+      <pre id="logBox" class="log"></pre>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
