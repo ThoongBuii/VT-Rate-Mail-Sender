@@ -8,7 +8,6 @@
   <link rel="icon" type="image/png" href="/static/favicon-32.png" sizes="32x32" />
   <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
   <link rel="stylesheet" href="/static/app.css" />
-  <script src="https://cdn.jsdelivr.net/npm/tinymce@7.6.1/tinymce.min.js" referrerpolicy="origin"></script>
 </head>
 <body>
   <header class="topbar">
@@ -64,15 +63,21 @@
           </label>
         </div>
       </div>
-      <textarea id="editor"></textarea>
+
       <p class="paste-hint">
-        Dán từ Outlook: dùng <b>Ctrl+V</b> hoặc nút <b>Dán từ Outlook</b> bên dưới.
-        Nên copy trong cửa sổ mail đã mở (không chỉ khung đọc nhanh) để giữ bảng + chữ ký + ảnh.
+        <b>Soạn nội dung trong Outlook</b> (bảng giá + chữ ký) để giữ đúng font/khoảng cách/ảnh —
+        không dán clipboard vào đây. Sau đó bấm <b>Đồng bộ từ Outlook</b>.
       </p>
+      <div class="send-row compose-actions">
+        <button id="btnComposeOutlook" class="btn primary" type="button">Soạn trong Outlook</button>
+        <button id="btnSyncOutlook" class="btn dark" type="button">Đồng bộ từ Outlook</button>
+        <button id="btnSuggest" class="btn ghost" type="button">Nạp gợi ý</button>
+      </div>
+
+      <iframe id="composeFrame" class="compose-frame" title="Nội dung mail đã đồng bộ"></iframe>
+
       <div class="send-row">
         <button id="btnToPreview" class="btn primary" type="button">Sang Preview →</button>
-        <button id="btnPasteOutlook" class="btn ghost" type="button">Dán từ Outlook</button>
-        <button id="btnSuggest" class="btn ghost" type="button">Nạp gợi ý</button>
       </div>
     </section>
 

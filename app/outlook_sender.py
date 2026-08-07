@@ -4,6 +4,7 @@ import platform
 import subprocess
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -12,6 +13,10 @@ from .sender_smtp import split_emails
 from .template_engine import render_body_html, render_subject
 
 TEMPLATE_SUBJECT_PREFIX = "[VT-TEMPLATE]"
+
+
+def uuid_hex() -> str:
+    return uuid.uuid4().hex
 
 
 class OutlookDesktopSender:
@@ -300,42 +305,155 @@ end tell
             except Exception:  # noqa: BLE001
                 pass
         mail.Subject = subject
-        mail.HTMLBody = html_body or "<div></div>"
+        # Để trống hoặc HTML đơn giản — user dán bảng + chữ ký trong Outlook (giữ nguyên format).
+        body = (html_body or "").strip()
+        if not body or body in ("<div></div>", "<p></p>", "<p><br></p>"):
+            mail.Body = ""
+            mail.HTMLBody = "<div><br></div>"
+        else:
+            mail.HTMLBody = body
         self._win_template_item = mail
-        # Non-modal so app stays usable; user clicks sync later
         mail.Display(False)
         return (
             "Đã mở New Mail trong Outlook.\n\n"
-            "1) Dán bảng giá + chữ ký\n"
+            "1) Trong Outlook: dán bảng giá + chữ ký như gửi tay (giữ format)\n"
             "2) Giữ subject có [VT-TEMPLATE]\n"
-            "3) KHÔNG Send — chỉ soạn xong rồi quay lại app\n"
-            "4) Bấm “Đồng bộ từ Outlook”"
+            "3) KHÔNG bấm Send\n"
+            "4) Quay lại app → bấm “Đồng bộ từ Outlook”"
         )
+
+    def _windows_html_with_inline_images(self, mail_item: Any) -> str:
+        """
+        Lấy HTMLBody và nhúng ảnh cid: → data URI để Preview/gửi giữ đúng chữ ký.
+        """
+        import base64
+        import re
+        import tempfile
+
+        html = str(getattr(mail_item, "HTMLBody", None) or "")
+        if not html.strip():
+            return html
+
+        cid_map: dict[str, str] = {}
+        try:
+            count = int(mail_item.Attachments.Count)
+        except Exception:  # noqa: BLE001
+            count = 0
+
+        # PR_ATTACH_CONTENT_ID
+        prop_w = "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
+        prop_a = "http://schemas.microsoft.com/mapi/proptag/0x3712001E"
+
+        for i in range(1, count + 1):
+            try:
+                att = mail_item.Attachments.Item(i)
+            except Exception:  # noqa: BLE001
+                continue
+            cid = ""
+            try:
+                pa = att.PropertyAccessor
+                try:
+                    cid = str(pa.GetProperty(prop_w) or "")
+                except Exception:  # noqa: BLE001
+                    try:
+                        cid = str(pa.GetProperty(prop_a) or "")
+                    except Exception:  # noqa: BLE001
+                        cid = ""
+            except Exception:  # noqa: BLE001
+                cid = ""
+            cid = cid.strip().strip("<>")
+            if not cid:
+                continue
+
+            filename = str(getattr(att, "FileName", None) or f"image_{i}.png")
+            tmp = Path(tempfile.gettempdir()) / f"vt_cid_{uuid_hex()}_{filename}"
+            try:
+                att.SaveAsFile(str(tmp))
+                raw = tmp.read_bytes()
+            except Exception:  # noqa: BLE001
+                continue
+            finally:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            lower = filename.lower()
+            if lower.endswith((".jpg", ".jpeg")):
+                mime = "image/jpeg"
+            elif lower.endswith(".gif"):
+                mime = "image/gif"
+            elif lower.endswith(".bmp"):
+                mime = "image/bmp"
+            elif lower.endswith(".webp"):
+                mime = "image/webp"
+            else:
+                mime = "image/png"
+            cid_map[cid.lower()] = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+        if not cid_map:
+            return html
+
+        def _repl_src(match: Any) -> str:
+            src = match.group(1)
+            if src.lower().startswith("cid:"):
+                key = src[4:].strip().strip("<>").lower()
+                return f'src="{cid_map.get(key, src)}"'
+            return match.group(0)
+
+        return re.sub(r"""src=["']([^"']+)["']""", _repl_src, html, flags=re.I)
 
     def _sync_template_windows(self) -> str:
         import win32com.client  # type: ignore
 
+        outlook = win32com.client.Dispatch("Outlook.Application")
+
+        # 1) Cửa sổ soạn đang mở (Inspectors) — mới nhất, đủ ảnh chữ ký
+        try:
+            inspectors = outlook.Inspectors
+            for i in range(1, int(inspectors.Count) + 1):
+                try:
+                    item = inspectors.Item(i).CurrentItem
+                    if int(getattr(item, "Class", 0)) != 43:  # olMail
+                        continue
+                    subj = str(getattr(item, "Subject", "") or "")
+                    if TEMPLATE_SUBJECT_PREFIX not in subj:
+                        continue
+                    html = self._windows_html_with_inline_images(item)
+                    if html.strip():
+                        self._win_template_item = item
+                        return html
+                except Exception:  # noqa: BLE001
+                    continue
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 2) Item app đã Display trước đó
         if self._win_template_item is not None:
             try:
-                html_body = self._win_template_item.HTMLBody or ""
-                if html_body.strip():
-                    return html_body
+                html = self._windows_html_with_inline_images(self._win_template_item)
+                if html.strip():
+                    return html
             except Exception:  # noqa: BLE001
                 pass
 
-        outlook = win32com.client.Dispatch("Outlook.Application")
+        # 3) Drafts
         namespace = outlook.GetNamespace("MAPI")
         drafts = namespace.GetDefaultFolder(16)  # olFolderDrafts
         items = drafts.Items
         items.Sort("[LastModificationTime]", True)
-        for i in range(1, min(items.Count, 40) + 1):
+        for i in range(1, min(int(items.Count), 50) + 1):
             it = items.Item(i)
-            subj = getattr(it, "Subject", "") or ""
+            subj = str(getattr(it, "Subject", "") or "")
             if TEMPLATE_SUBJECT_PREFIX in subj:
-                return it.HTMLBody or ""
+                html = self._windows_html_with_inline_images(it)
+                if html.strip():
+                    return html
+
         raise RuntimeError(
-            "Không tìm thấy nháp [VT-TEMPLATE] trong Drafts.\n"
-            "Hãy Soạn trong Outlook → lưu nháp → Đồng bộ."
+            "Không tìm thấy thư [VT-TEMPLATE].\n"
+            "Hãy bấm “Soạn trong Outlook”, dán nội dung + chữ ký, "
+            "giữ cửa sổ mở (hoặc Save Draft), rồi “Đồng bộ từ Outlook”."
         )
 
     # --------------------------------- send ---------------------------------

@@ -259,6 +259,41 @@ def api_outlook_open():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
+@flask_app.post("/api/outlook/compose-template")
+def api_outlook_compose_template():
+    """Mở New Mail trong Outlook để soạn bảng + chữ ký (giữ format gốc)."""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        html = str(data.get("template_html") or STATE.template_html or "")
+        subject_hint = str(data.get("subject") or STATE.subject or "")
+        msg = STATE.sender.open_template_composer(html, subject_hint=subject_hint)
+        return jsonify({"ok": True, "message": msg, "account": STATE.sender.account_email})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@flask_app.post("/api/outlook/sync-template")
+def api_outlook_sync_template():
+    """Đồng bộ HTML (kèm ảnh chữ ký) từ cửa sổ/nháp [VT-TEMPLATE]."""
+    try:
+        html = STATE.sender.sync_template_from_outlook()
+        if not (html or "").strip():
+            return jsonify({"ok": False, "error": "HTML đồng bộ trống."}), 400
+        STATE.template_html = html
+        STATE.apply_compose_to_mails()
+        STATE.save_config()
+        return jsonify(
+            {
+                "ok": True,
+                "template_html": STATE.template_html,
+                "message": "Đã đồng bộ nội dung từ Outlook (giữ cấu trúc + chữ ký).",
+                "state": STATE.snapshot(),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 @flask_app.post("/api/compose")
 def api_compose():
     data = request.get_json(force=True, silent=True) or {}

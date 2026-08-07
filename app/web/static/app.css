@@ -216,12 +216,30 @@ html, body {
 .compose-panel iframe { background: #fff; }
 
 .paste-hint {
-  margin: 8px 0 0;
+  margin: 0 0 8px;
   font-size: 12px;
   color: var(--muted);
-  line-height: 1.4;
+  line-height: 1.45;
 }
 .paste-hint b { color: var(--text); }
+
+.compose-actions {
+  margin-bottom: 8px;
+}
+
+.compose-frame {
+  flex: 1;
+  width: 100%;
+  min-height: 360px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.compose-panel .tox-tinymce {
+  display: none !important;
+}
+
 
 .preview-panel {
   padding: 12px;
