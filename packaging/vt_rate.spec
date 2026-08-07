@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 
 block_cipher = None
-root = Path(SPECPATH).resolve()
+# SPECPATH = packaging/ → project root is parent
+root = Path(SPECPATH).resolve().parent
 
 datas = [
     (str(root / "app" / "web"), "app/web"),
