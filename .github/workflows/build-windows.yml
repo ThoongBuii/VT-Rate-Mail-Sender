@@ -24,20 +24,37 @@ jobs:
           python -m pip install -U pip
           pip install -r requirements.txt -r requirements-build.txt pywin32
 
-      - name: Build with PyInstaller
+      - name: Build onefile EXE
         run: pyinstaller packaging/vt_rate.spec --noconfirm
 
-      - name: Zip folder
+      - name: Package ZIP (single exe)
         shell: pwsh
         run: |
-          Compress-Archive -Path dist\VTRateMailSender -DestinationPath dist\VT-Rate-Mail-Sender-Windows.zip -Force
-          Get-Item dist\VT-Rate-Mail-Sender-Windows.zip | Format-List Name, Length
+          if (-not (Test-Path dist\VTRateMailSender.exe)) {
+            throw "Missing dist\VTRateMailSender.exe"
+          }
+          New-Item -ItemType Directory -Force -Path dist\publish | Out-Null
+          Copy-Item dist\VTRateMailSender.exe dist\publish\VTRateMailSender.exe -Force
+          # Hướng dẫn ngắn kèm ZIP
+          @"
+          VT Rate Mail Sender (Windows — 1 file .exe)
+
+          1. Giai nen ZIP → chi can VTRateMailSender.exe (co the copy bat ky dau)
+          2. Can Microsoft Edge WebView2 Runtime (Windows 10/11 thuong da co)
+             Neu thieu: https://go.microsoft.com/fwlink/p/?LinkId=2124703
+          3. Outlook desktop da dang nhap
+          4. Pin tu .exe (khong pin tu Chrome)
+          "@ | Set-Content -Encoding UTF8 dist\publish\HUONG-DAN.txt
+          Compress-Archive -Path dist\publish\* -DestinationPath dist\VT-Rate-Mail-Sender-Windows.zip -Force
+          Get-Item dist\VT-Rate-Mail-Sender-Windows.zip, dist\VTRateMailSender.exe | Format-List Name, Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: VT-Rate-Mail-Sender-Windows
-          path: dist/VT-Rate-Mail-Sender-Windows.zip
+          path: |
+            dist/VT-Rate-Mail-Sender-Windows.zip
+            dist/VTRateMailSender.exe
           if-no-files-found: error
 
       - name: Attach to GitHub Release
@@ -50,9 +67,9 @@ jobs:
             TAG="v1.0.0"
           fi
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/VT-Rate-Mail-Sender-Windows.zip --clobber
+            gh release upload "$TAG" dist/VT-Rate-Mail-Sender-Windows.zip dist/VTRateMailSender.exe --clobber
           else
-            gh release create "$TAG" dist/VT-Rate-Mail-Sender-Windows.zip \
+            gh release create "$TAG" dist/VT-Rate-Mail-Sender-Windows.zip dist/VTRateMailSender.exe \
               --title "$TAG — Windows" \
-              --notes "Bản Windows desktop (Outlook). Giải nén → chạy VTRateMailSender.exe"
+              --notes "Desktop: 1 file VTRateMailSender.exe (WebView2). Khong can thu muc _internal."
           fi

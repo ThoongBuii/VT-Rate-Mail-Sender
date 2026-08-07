@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""VT Rate Mail Sender — cửa sổ desktop (pywebview hoặc Edge/Chrome --app)."""
+"""VT Rate Mail Sender — desktop window (pywebview / Edge WebView2)."""
 
 from __future__ import annotations
 
 import os
-import shutil
 import socket
-import subprocess
 import sys
 import threading
 import time
 import traceback
 import webbrowser
-from pathlib import Path
+
+
+APP_USER_MODEL_ID = "VTLogistics.VTRateMailSender"
 
 
 def _fix_stdio_encoding() -> None:
@@ -23,6 +23,18 @@ def _fix_stdio_encoding() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             pass
+
+
+def _set_windows_app_id() -> None:
+    """Giúp Windows coi đây là app riêng (pin taskbar / icon), không gộp với browser."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _free_port() -> int:
@@ -68,70 +80,15 @@ def _win_message(title: str, text: str, error: bool = True) -> None:
         pass
 
 
-def _find_edge_or_chrome() -> str | None:
-    """Ưu tiên Microsoft Edge, rồi Google Chrome."""
-    if sys.platform != "win32":
-        return None
-
-    candidates: list[str] = []
-    local = os.environ.get("LOCALAPPDATA", "")
-    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
-    pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
-
-    for base in (pf, pf86, local):
-        candidates.extend(
-            [
-                str(Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
-                str(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"),
-            ]
-        )
-
-    for name in ("msedge", "chrome"):
-        found = shutil.which(name)
-        if found:
-            candidates.append(found)
-
-    for path in candidates:
-        if path and Path(path).is_file():
-            return path
-    return None
-
-
-def _open_browser_app_window(url: str, width: int = 1320, height: int = 860) -> bool:
-    """
-    Mở Edge/Chrome kiểu ứng dụng (--app) — không hiện thanh địa chỉ.
-    Chờ cửa sổ đóng rồi return True. False nếu không tìm thấy trình duyệt.
-    """
-    browser = _find_edge_or_chrome()
-    if not browser:
-        return False
-
-    from app.paths import user_data_dir
-
-    profile = user_data_dir() / "browser-app-profile"
-    profile.mkdir(parents=True, exist_ok=True)
-
-    cmd = [
-        browser,
-        f"--user-data-dir={profile}",
-        f"--app={url}",
-        f"--window-size={width},{height}",
-        "--disable-features=TranslateUI",
-        "--no-first-run",
-        "--no-default-browser-check",
-    ]
-    _log_startup(f"browser-app: {' '.join(cmd)}")
-    proc = subprocess.Popen(cmd)  # noqa: S603
-    proc.wait()
-    return True
-
-
 def _start_webview(url: str) -> None:
+    # Ép Edge WebView2 — không dùng WinForms/pythonnet, không mở Chrome.
+    if sys.platform == "win32":
+        os.environ.setdefault("PYWEBVIEW_GUI", "edgechromium")
+
     import webview
 
     start_kwargs: dict = {}
     if sys.platform == "win32":
-        # Tránh WinForms/pythonnet (thường lỗi khi đóng gói + tải ZIP).
         start_kwargs["gui"] = "edgechromium"
 
     window = webview.create_window(
@@ -156,6 +113,8 @@ def _start_webview(url: str) -> None:
 
 def main() -> None:
     _fix_stdio_encoding()
+    _set_windows_app_id()
+
     from app.webapp import flask_app
 
     port = _free_port()
@@ -167,7 +126,6 @@ def main() -> None:
     threading.Thread(target=run_server, daemon=True).start()
     time.sleep(0.6)
 
-    # 1) pywebview (Mac ổn; Windows cần WebView2 runtime)
     try:
         _start_webview(url)
         return
@@ -176,45 +134,20 @@ def main() -> None:
         _log_startup(f"webview failed:\n{detail}")
         _safe_print(f"pywebview failed: {exc}")
 
-    # 2) Windows: Edge/Chrome --app (cửa sổ giống desktop, không cần WebView2 COM)
-    if sys.platform == "win32":
-        try:
-            if _open_browser_app_window(url):
-                _force_exit(0)
-                return
-        except Exception as exc:  # noqa: BLE001
-            _log_startup(f"browser-app failed: {exc}")
-            _safe_print(f"browser-app failed: {exc}")
-
-    # 3) Fallback cuối: trình duyệt thường
-    webbrowser.open(url)
-    _win_message(
-        "VT Rate Mail Sender",
-        "Khong mo duoc cua so desktop (WebView2).\n"
-        "Da mo trinh duyet tam thoi.\n\n"
-        "Cai Microsoft Edge WebView2 Runtime neu muon cua so app:\n"
-        "https://developer.microsoft.com/microsoft-edge/webview2/\n\n"
-        "Tat app: Task Manager → VTRateMailSender.exe\n"
-        "hoac chay stop-app-windows.bat\n\n"
-        "Log: %APPDATA%\\VTRateMailSender\\logs\\startup.log",
+    # Không fallback Chrome/website — đó là lý do pin ra icon Chrome.
+    msg = (
+        "Khong mo duoc cua so desktop (Microsoft Edge WebView2).\n\n"
+        "Day la ung dung desktop, khong chay bang Chrome.\n"
+        "Hay cai WebView2 Runtime (mien phi) rồi mo lai app:\n"
+        "https://go.microsoft.com/fwlink/p/?LinkId=2124703\n\n"
+        "Log: %APPDATA%\\VTRateMailSender\\logs\\startup.log"
     )
-    if getattr(sys, "frozen", False):
-        # Giữ server tới khi user tắt process (để dùng được tạm trong browser)
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
-        _force_exit(0)
-        return
-
-    _safe_print(f"Server: {url}")
-    _safe_print("Nhan Ctrl+C de dung.")
+    _win_message("VT Rate Mail Sender", msg)
     try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
+        webbrowser.open("https://go.microsoft.com/fwlink/p/?LinkId=2124703")
+    except Exception:  # noqa: BLE001
         pass
+    _force_exit(1)
 
 
 if __name__ == "__main__":

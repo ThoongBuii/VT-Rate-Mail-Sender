@@ -18,15 +18,15 @@ xattr -cr "/Applications/VT Rate Mail Sender.app"
 4. Mở app → Outlook đã login → Allow **Automation** nếu được hỏi
 
 ### Windows
-1. Tải `VT-Rate-Mail-Sender-Windows.zip` từ [Releases](https://github.com/ThoongBuii/VT-Rate-Mail-Sender/releases)
-2. (Khuyến nghị) Chuột phải ZIP → Properties → **Unblock** → OK
-3. Giải nén → chạy `VTRateMailSender.exe` (giữ nguyên cả thư mục)
-4. Cần Outlook desktop đã login + Microsoft Edge/WebView2
+1. Tải `VTRateMailSender.exe` (hoặc ZIP) từ [Releases](https://github.com/ThoongBuii/VT-Rate-Mail-Sender/releases)
+2. **Một file `.exe` độc lập** — copy đi đâu cũng được (Desktop, USB, …), không cần thư mục `_internal`
+3. Chuột phải → Pin to taskbar (pin từ `.exe`, không pin từ Chrome)
+4. Cần **Outlook desktop** đã login + **Edge WebView2** (Win10/11 thường sẵn). Thiếu thì cài: https://go.microsoft.com/fwlink/p/?LinkId=2124703
 
-> **Không xóa được thư mục / Outlook không mở:** đóng tab trình duyệt **không** đủ — app vẫn chạy nền.  
-> Task Manager → End task → `VTRateMailSender.exe` và `OUTLOOK.EXE`,  
-> hoặc chạy `scripts\stop-app-windows.bat` (trong repo / kèm bản phát hành).  
-> App ưu tiên cửa sổ desktop; nếu thiếu WebView2 sẽ mở **Edge/Chrome dạng --app** (không thanh địa chỉ). Log: `%APPDATA%\VTRateMailSender\logs\startup.log`
+> Đây là **desktop app** (cửa sổ riêng của `.exe`). Localhost bên trong chỉ là engine — không phải website.
+
+> Nếu **Outlook không mở / vẫn còn process cũ:** Task Manager → End task `VTRateMailSender.exe` / `OUTLOOK.EXE` hoặc `scripts\stop-app-windows.bat`.
+> Log: `%APPDATA%\VTRateMailSender\logs\startup.log`
 
 ### Excel danh bạ (4 cột)
 `Agency Company` · `Account Name` · `Account Mail` · `Mail cc`
