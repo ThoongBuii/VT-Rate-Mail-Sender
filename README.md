@@ -25,7 +25,8 @@ xattr -cr "/Applications/VT Rate Mail Sender.app"
 
 > **Không xóa được thư mục / Outlook không mở:** đóng tab trình duyệt **không** đủ — app vẫn chạy nền.  
 > Task Manager → End task → `VTRateMailSender.exe` và `OUTLOOK.EXE`,  
-> hoặc chạy `scripts\stop-app-windows.bat` (trong repo / kèm bản phát hành).
+> hoặc chạy `scripts\stop-app-windows.bat` (trong repo / kèm bản phát hành).  
+> App ưu tiên cửa sổ desktop; nếu thiếu WebView2 sẽ mở **Edge/Chrome dạng --app** (không thanh địa chỉ). Log: `%APPDATA%\VTRateMailSender\logs\startup.log`
 
 ### Excel danh bạ (4 cột)
 `Agency Company` · `Account Name` · `Account Mail` · `Mail cc`
