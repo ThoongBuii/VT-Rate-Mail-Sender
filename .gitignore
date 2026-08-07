@@ -12,6 +12,7 @@ attachments/*
 !attachments/.gitkeep
 .DS_Store
 *.xlsx
+!samples/
 !samples/*.xlsx
 build/
 dist/
