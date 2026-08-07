@@ -223,10 +223,20 @@ html, body {
 }
 .paste-hint b { color: var(--text); }
 
-.compose-actions {
-  margin-bottom: 8px;
+.paste-zone {
+  position: relative;
+  flex: 1;
+  min-height: 360px;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+  border: 1px dashed transparent;
+  border-radius: 8px;
 }
-
+.paste-zone:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(31, 106, 165, 0.15);
+}
 .compose-frame {
   flex: 1;
   width: 100%;
@@ -235,9 +245,22 @@ html, body {
   border-radius: 8px;
   background: #fff;
 }
-
-.compose-panel .tox-tinymce {
-  display: none !important;
+.paste-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+  color: var(--muted);
+  font-size: 14px;
+  background: rgba(247, 249, 252, 0.92);
+  border-radius: 8px;
+  pointer-events: none;
+}
+.paste-placeholder.hidden {
+  display: none;
 }
 
 

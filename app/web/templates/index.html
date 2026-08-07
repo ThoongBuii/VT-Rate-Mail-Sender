@@ -65,19 +65,16 @@
       </div>
 
       <p class="paste-hint">
-        <b>Soạn nội dung trong Outlook</b> (bảng giá + chữ ký) để giữ đúng font/khoảng cách/ảnh —
-        không dán clipboard vào đây. Sau đó bấm <b>Đồng bộ từ Outlook</b>.
+        Trong <b>Outlook New Mail</b>: chọn thân mail (<b>Ctrl+A</b>) → <b>Ctrl+C</b>.
+        Quay lại khung bên dưới → <b>Ctrl+V</b> (app đọc clipboard Windows để giữ font + ảnh chữ ký).
       </p>
-      <div class="send-row compose-actions">
-        <button id="btnComposeOutlook" class="btn primary" type="button">Soạn trong Outlook</button>
-        <button id="btnSyncOutlook" class="btn dark" type="button">Đồng bộ từ Outlook</button>
-        <button id="btnSuggest" class="btn ghost" type="button">Nạp gợi ý</button>
+      <div id="pasteZone" class="paste-zone" tabindex="0" title="Click vào đây rồi Ctrl+V">
+        <iframe id="composeFrame" class="compose-frame" title="Nội dung mail"></iframe>
+        <div id="pastePlaceholder" class="paste-placeholder">Click vào đây rồi Ctrl+V để dán từ Outlook</div>
       </div>
-
-      <iframe id="composeFrame" class="compose-frame" title="Nội dung mail đã đồng bộ"></iframe>
-
       <div class="send-row">
         <button id="btnToPreview" class="btn primary" type="button">Sang Preview →</button>
+        <button id="btnSuggest" class="btn ghost" type="button">Nạp gợi ý</button>
       </div>
     </section>
 

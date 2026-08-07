@@ -37,6 +37,7 @@ function frameDoc(html) {
 function setComposeHtml(html) {
   templateHtml = html || "";
   document.getElementById("composeFrame").srcdoc = frameDoc(templateHtml);
+  document.getElementById("pastePlaceholder").classList.toggle("hidden", !!templateHtml.trim());
 }
 
 function getComposeHtml() {
@@ -227,35 +228,46 @@ document.getElementById("btnOutlook").onclick = async () => {
   }
 };
 
-document.getElementById("btnComposeOutlook").onclick = async () => {
-  try {
-    await saveCompose();
-    const res = await api("/api/outlook/compose-template", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        template_html: getComposeHtml(),
-        subject: document.getElementById("subject").value,
-      }),
-    });
-    setOutlookStatus(`Outlook sẵn sàng · ${res.account || ""}`);
-    alert(res.message || "Đã mở Outlook");
-  } catch (e) {
-    alert(e.message);
-  }
-};
+async function pasteFromOutlookClipboard(browserHtml) {
+  const res = await api("/api/clipboard/paste", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ html: browserHtml || "" }),
+  });
+  setComposeHtml(res.template_html || "");
+  if (res.state) applyState(res.state, true);
+  await saveCompose();
+}
 
-document.getElementById("btnSyncOutlook").onclick = async () => {
+const pasteZone = document.getElementById("pasteZone");
+pasteZone.addEventListener("click", () => pasteZone.focus());
+pasteZone.addEventListener("paste", async (ev) => {
+  ev.preventDefault();
+  ev.stopPropagation();
+  let browserHtml = "";
   try {
-    const res = await api("/api/outlook/sync-template", { method: "POST" });
-    setComposeHtml(res.template_html || "");
-    if (res.state) applyState(res.state, true);
-    await saveCompose();
-    alert(res.message || "Đã đồng bộ từ Outlook");
+    browserHtml = ev.clipboardData?.getData("text/html") || "";
+  } catch (_) {}
+  try {
+    await pasteFromOutlookClipboard(browserHtml);
   } catch (e) {
     alert(e.message);
   }
-};
+});
+// Bắt Ctrl+V toàn trang khi đang tab Soạn (iframe có thể nuốt focus)
+document.addEventListener("keydown", async (ev) => {
+  if (currentView !== "compose") return;
+  const isPaste = (ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "v";
+  if (!isPaste) return;
+  const tag = (ev.target && ev.target.tagName) || "";
+  if (tag === "INPUT" || tag === "TEXTAREA") return;
+  ev.preventDefault();
+  try {
+    await pasteFromOutlookClipboard("");
+  } catch (e) {
+    alert(e.message);
+  }
+});
 
 document.getElementById("fileImport").onchange = async (ev) => {
   const file = ev.target.files?.[0];
@@ -319,7 +331,7 @@ document.getElementById("btnStart").onclick = async () => {
       delay_max: Number(document.getElementById("delayMax").value || 20),
     };
     if (!getComposeHtml().trim()) {
-      alert("Chưa có nội dung mail. Hãy Soạn trong Outlook → Đồng bộ từ Outlook.");
+      alert("Chưa có nội dung mail. Hãy copy từ Outlook New Mail rồi Ctrl+V vào khung soạn.");
       return;
     }
     if (!confirm(`Đã kiểm tra Preview?\nGửi Semi-Auto · Delay ${payload.delay_min}–${payload.delay_max}s`))

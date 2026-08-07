@@ -29,6 +29,7 @@ hiddenimports = [
     "app.template_engine",
     "app.models",
     "app.paths",
+    "app.clipboard_html",
 ]
 
 # Gom toàn bộ resource pywebview (WebView2 loader, JS, …)

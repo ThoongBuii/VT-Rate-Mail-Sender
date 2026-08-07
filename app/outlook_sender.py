@@ -324,11 +324,13 @@ end tell
 
     def _windows_html_with_inline_images(self, mail_item: Any) -> str:
         """
-        Lấy HTMLBody và nhúng ảnh cid: → data URI để Preview/gửi giữ đúng chữ ký.
+        Lấy HTMLBody và nhúng ảnh cid:/file đính kèm → data URI để Preview/gửi giữ đúng chữ ký.
         """
         import base64
         import re
         import tempfile
+
+        from .clipboard_html import embed_local_and_cid_images
 
         html = str(getattr(mail_item, "HTMLBody", None) or "")
         if not html.strip():
@@ -340,7 +342,6 @@ end tell
         except Exception:  # noqa: BLE001
             count = 0
 
-        # PR_ATTACH_CONTENT_ID
         prop_w = "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
         prop_a = "http://schemas.microsoft.com/mapi/proptag/0x3712001E"
 
@@ -348,21 +349,6 @@ end tell
             try:
                 att = mail_item.Attachments.Item(i)
             except Exception:  # noqa: BLE001
-                continue
-            cid = ""
-            try:
-                pa = att.PropertyAccessor
-                try:
-                    cid = str(pa.GetProperty(prop_w) or "")
-                except Exception:  # noqa: BLE001
-                    try:
-                        cid = str(pa.GetProperty(prop_a) or "")
-                    except Exception:  # noqa: BLE001
-                        cid = ""
-            except Exception:  # noqa: BLE001
-                cid = ""
-            cid = cid.strip().strip("<>")
-            if not cid:
                 continue
 
             filename = str(getattr(att, "FileName", None) or f"image_{i}.png")
@@ -389,19 +375,30 @@ end tell
                 mime = "image/webp"
             else:
                 mime = "image/png"
-            cid_map[cid.lower()] = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+            data_uri = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
-        if not cid_map:
-            return html
+            cid = ""
+            try:
+                pa = att.PropertyAccessor
+                try:
+                    cid = str(pa.GetProperty(prop_w) or "")
+                except Exception:  # noqa: BLE001
+                    try:
+                        cid = str(pa.GetProperty(prop_a) or "")
+                    except Exception:  # noqa: BLE001
+                        cid = ""
+            except Exception:  # noqa: BLE001
+                cid = ""
+            cid = cid.strip().strip("<>")
+            if cid:
+                cid_map[cid.lower()] = data_uri
+            # Luôn map theo tên file (Outlook signature_* thường chỉ khớp filename)
+            stem = Path(filename).stem.lower()
+            cid_map[filename.lower()] = data_uri
+            cid_map[stem] = data_uri
+            cid_map[f"cid:{stem}"] = data_uri
 
-        def _repl_src(match: Any) -> str:
-            src = match.group(1)
-            if src.lower().startswith("cid:"):
-                key = src[4:].strip().strip("<>").lower()
-                return f'src="{cid_map.get(key, src)}"'
-            return match.group(0)
-
-        return re.sub(r"""src=["']([^"']+)["']""", _repl_src, html, flags=re.I)
+        return embed_local_and_cid_images(html, cid_map)
 
     def _sync_template_windows(self) -> str:
         import win32com.client  # type: ignore
