@@ -12,9 +12,11 @@ Desktop app nội bộ — gửi mail báo giá qua **Outlook đã đăng nhập
 > Lần đầu macOS có thể hỏi quyền **Automation** (điều khiển Outlook) → Allow.
 
 ### Windows
-1. Cài Outlook desktop + đăng nhập
-2. Chạy `VTRateMailSender.exe` (trong thư mục đã giải nén)
-3. Cài thêm `pywin32` chỉ khi chạy từ source; bản `.exe` đã đóng gói sẵn
+1. Tải `VT-Rate-Mail-Sender-Windows.zip` từ [Releases](https://github.com/ThoongBuii/VT-Rate-Mail-Sender/releases)
+2. Giải nén → mở thư mục `VTRateMailSender` → chạy `VTRateMailSender.exe`
+3. Cài **Outlook desktop** và đăng nhập account gửi mail trước khi dùng
+
+> Bản `.exe` đã đóng gói sẵn — không cần cài Python.
 
 ### Excel danh bạ (4 cột)
 `Agency Company` · `Account Name` · `Account Mail` · `Mail cc`
