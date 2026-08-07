@@ -163,40 +163,210 @@ async function loadPreview(index) {
   document.getElementById("previewFrame").srcdoc = `<!DOCTYPE html><html><head><meta charset="utf-8">
     <style>
       body{font-family:Calibri,Arial,sans-serif;font-size:14px;margin:12px;color:#222}
-      table{border-collapse:collapse} td,th{border:1px solid #999;padding:4px 8px}
-      img{max-width:100%}
+      table{border-collapse:collapse}
+      img{max-width:100%;height:auto}
     </style></head><body>${p.body_html || ""}</body></html>`;
   renderList();
+}
+
+/** Chuẩn hóa HTML copy từ Outlook/Word — giữ bảng, màu, chữ ký; bỏ rác Office. */
+function normalizeOutlookHtml(html) {
+  if (!html) return "";
+  let h = String(html);
+
+  const start = h.indexOf("<!--StartFragment-->");
+  const end = h.indexOf("<!--EndFragment-->");
+  if (start !== -1 && end !== -1 && end > start) {
+    h = h.slice(start + "<!--StartFragment-->".length, end);
+  }
+
+  // Comment điều kiện Word / Office
+  h = h.replace(/<!--\[if[!?\s][\s\S]*?<!\[endif\]-->/gi, "");
+  h = h.replace(/<!\[if[!?\s][\s\S]*?<!\[endif\]>/gi, "");
+
+  // VML → img (chữ ký Outlook hay dùng)
+  h = h.replace(
+    /<v:imagedata[^>]*\ssrc=["']([^"']+)["'][^>]*\/?>/gi,
+    '<img src="$1" alt="" style="max-width:100%;height:auto;" />'
+  );
+  h = h.replace(
+    /<v:imagedata[^>]*\so:href=["']([^"']+)["'][^>]*\/?>/gi,
+    '<img src="$1" alt="" style="max-width:100%;height:auto;" />'
+  );
+
+  // Gỡ thẻ Office namespace (giữ nội dung text bên trong)
+  h = h.replace(/<\/?o:p[^>]*>/gi, "");
+  h = h.replace(/<\/?xml:[^>]*>/gi, "");
+  h = h.replace(/<\/?w:[^>]*>/gi, "");
+  h = h.replace(/<\/?m:[^>]*>/gi, "");
+  h = h.replace(/<\/?v:[^>]*>/gi, "");
+  h = h.replace(/<\/?(html|body|head|meta|link|title)[^>]*>/gi, "");
+
+  // script nguy hiểm
+  h = h.replace(/<script[\s\S]*?<\/script>/gi, "");
+
+  // class Mso* thừa (không xóa style=)
+  h = h.replace(/\sclass=("Mso[^"]*"|'Mso[^']*'|Mso\w+)/gi, "");
+
+  // mso-line-break / empty spans
+  h = h.replace(/<span[^>]*>\s*<\/span>/gi, "");
+
+  // Đồng bộ font phổ biến từ Outlook
+  h = h.replace(/font-family:\s*["']?Calibri["']?/gi, "font-family:Calibri,Arial,sans-serif");
+  h = h.replace(/font-family:\s*["']?Times New Roman["']?/gi, 'font-family:"Times New Roman",Times,serif');
+
+  return h.trim();
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function readClipboardOutlookHtml() {
+  if (!navigator.clipboard?.read) {
+    throw new Error("Trình duyệt/WebView chưa cho đọc clipboard nâng cao. Hãy Ctrl+V trực tiếp.");
+  }
+  const items = await navigator.clipboard.read();
+  let html = "";
+  const imageUrls = [];
+
+  for (const item of items) {
+    if (item.types.includes("text/html")) {
+      const blob = await item.getType("text/html");
+      html = normalizeOutlookHtml(await blob.text());
+    } else if (item.types.includes("text/plain") && !html) {
+      const blob = await item.getType("text/plain");
+      const text = await blob.text();
+      html = text
+        .split(/\r?\n/)
+        .map((line) => `<p>${escapeHtml(line) || "<br>"}</p>`)
+        .join("");
+    }
+    for (const type of item.types) {
+      if (type.startsWith("image/")) {
+        const blob = await item.getType(type);
+        imageUrls.push(await blobToDataUrl(blob));
+      }
+    }
+  }
+
+  if (imageUrls.length) {
+    // Chỉ gắn ảnh clipboard khi HTML chưa có img / src bị vỡ
+    const hasRealImg = /<img[^>]+src=["'](?!cid:|file:)/i.test(html);
+    if (!hasRealImg) {
+      html += imageUrls
+        .map((src) => `<p><img src="${src}" alt="" style="max-width:100%;height:auto;" /></p>`)
+        .join("");
+    }
+  }
+
+  if (!html.trim()) throw new Error("Clipboard trống hoặc không có HTML từ Outlook.");
+  return html;
 }
 
 function initEditor(initialHtml) {
   return tinymce.init({
     selector: "#editor",
     license_key: "gpl",
-    height: 480,
+    height: 520,
     menubar: false,
     toolbar: false,
     statusbar: false,
-    plugins: "table lists link image paste",
+    plugins: "table lists link image",
     branding: false,
     promotion: false,
     resize: true,
+    // Giữ HTML Outlook tối đa (TinyMCE 7)
+    paste_as_text: false,
+    smart_paste: true,
     paste_data_images: true,
-    paste_merge_formats: true,
-    paste_webkit_styles: "all",
-    paste_retain_style_properties: "all",
-    valid_elements: "*[*]",
-    extended_valid_elements: "*[*]",
+    paste_merge_formats: false,
+    paste_tab_spaces: 4,
+    verify_html: false,
+    cleanup_on_startup: false,
     convert_urls: false,
     relative_urls: false,
-    content_style:
-      "body { font-family: Calibri, Arial, sans-serif; font-size: 14px; line-height: 1.45; margin: 12px; }" +
-      "table { border-collapse: collapse; }" +
-      "td, th { border: 1px solid #999; padding: 4px 8px; }",
+    remove_script_host: false,
+    entity_encoding: "raw",
+    indent: false,
+    // Cho phép gần như mọi thuộc tính/style inline từ Outlook
+    extended_valid_elements:
+      "style[*],span[*],font[*],div[*],p[*],table[*],tbody[*],thead[*],tfoot[*],tr[*],td[*],th[*]," +
+      "img[*],a[*],b[*],strong[*],i[*],em[*],u[*],s[*],br,hr,ul[*],ol[*],li[*],h1[*],h2[*],h3[*],center[*],blockquote[*],pre[*]",
+    valid_children: "+body[style],+div[style],+span[style]",
+    valid_styles: {
+      "*": [
+        "font-family",
+        "font-size",
+        "font-weight",
+        "font-style",
+        "text-decoration",
+        "text-align",
+        "color",
+        "background",
+        "background-color",
+        "margin",
+        "margin-left",
+        "margin-right",
+        "margin-top",
+        "margin-bottom",
+        "padding",
+        "padding-left",
+        "padding-right",
+        "padding-top",
+        "padding-bottom",
+        "border",
+        "border-width",
+        "border-style",
+        "border-color",
+        "border-collapse",
+        "border-spacing",
+        "width",
+        "height",
+        "max-width",
+        "min-width",
+        "vertical-align",
+        "white-space",
+        "line-height",
+        "letter-spacing",
+        "display",
+        "float",
+        "clear",
+        "list-style",
+        "list-style-type",
+      ].join(","),
+    },
+    formats: {},
+    content_style: `
+      body {
+        font-family: Calibri, Arial, sans-serif;
+        font-size: 14px;
+        line-height: 1.4;
+        margin: 12px;
+        color: #222;
+      }
+      /* Không ép border bảng — để style Outlook quyết định */
+      table { border-collapse: collapse; }
+      img { max-width: 100%; height: auto; }
+    `,
+    paste_preprocess(_editor, args) {
+      args.content = normalizeOutlookHtml(args.content);
+    },
     setup(ed) {
       editor = ed;
       ed.on("init", () => {
         ed.setContent(initialHtml || "");
+      });
+      ed.on("PastePostProcess", (e) => {
+        // Làm sạch nhẹ lần nữa sau khi TinyMCE parse
+        if (e.node) {
+          e.node.querySelectorAll("script").forEach((n) => n.remove());
+        }
       });
     },
   });
@@ -302,6 +472,23 @@ document.getElementById("btnSuggest").onclick = async () => {
   if (editor) editor.setContent(state.suggested_html || "");
   await saveCompose();
   await refreshState(true);
+};
+
+document.getElementById("btnPasteOutlook").onclick = async () => {
+  if (!editor) return;
+  try {
+    const html = await readClipboardOutlookHtml();
+    editor.focus();
+    editor.insertContent(html);
+    await saveCompose();
+    alert("Đã dán nội dung Outlook (giữ cấu trúc HTML). Kiểm tra Preview trước khi gửi.");
+  } catch (e) {
+    // Fallback: nhắc Ctrl+V — WebView đôi khi chặn clipboard.read
+    alert(
+      (e && e.message ? e.message + "\n\n" : "") +
+        "Thử: mở mail trong Outlook → Ctrl+A trong thân mail → Ctrl+C → click vào ô soạn → Ctrl+V."
+    );
+  }
 };
 
 document.getElementById("btnStart").onclick = async () => {

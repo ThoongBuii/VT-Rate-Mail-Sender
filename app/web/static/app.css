@@ -215,6 +215,14 @@ html, body {
 }
 .compose-panel iframe { background: #fff; }
 
+.paste-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.paste-hint b { color: var(--text); }
+
 .preview-panel {
   padding: 12px;
   min-height: 0;
