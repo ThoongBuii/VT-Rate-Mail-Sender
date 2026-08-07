@@ -17,5 +17,6 @@ attachments/*
 build/
 dist/
 *.spec.bak
+packaging/icons/app.iconset/
 .idea/
 .vscode/

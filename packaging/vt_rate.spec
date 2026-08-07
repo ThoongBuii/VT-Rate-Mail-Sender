@@ -7,6 +7,8 @@ from pathlib import Path
 block_cipher = None
 # SPECPATH = packaging/ → project root is parent
 root = Path(SPECPATH).resolve().parent
+icon_ico = root / "packaging" / "icons" / "app.ico"
+icon_icns = root / "packaging" / "icons" / "app.icns"
 
 datas = [
     (str(root / "app" / "web"), "app/web"),
@@ -72,6 +74,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(icon_ico) if icon_ico.exists() else None,
 )
 
 coll = COLLECT(
@@ -89,11 +92,13 @@ if sys.platform == "darwin":
     app = BUNDLE(
         coll,
         name="VT Rate Mail Sender.app",
-        icon=None,
+        icon=str(icon_icns) if icon_icns.exists() else None,
         bundle_identifier="vn.vtlogistics.ratemailsender",
         info_plist={
             "CFBundleName": "VT Rate Mail Sender",
             "CFBundleDisplayName": "VT Rate Mail Sender",
+            "CFBundleShortVersionString": "1.0.0",
+            "CFBundleVersion": "1.0.0",
             "NSHighResolutionCapable": True,
             "NSAppleEventsUsageDescription": "Điều khiển Microsoft Outlook để gửi mail báo giá.",
         },
