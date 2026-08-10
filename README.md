@@ -6,7 +6,7 @@
 
 **Soạn trong app:** Subject, attachment, nội dung (Dear / bảng giá / remark).  
 **Chữ ký Windows:** Outlook New Mail tự gắn khi gửi.  
-**Chữ ký macOS:** bấm **Chụp chữ ký Outlook** một lần → app lưu và gắn vào mỗi mail khi gửi (không dùng Tab/Cmd+V).
+**Chữ ký macOS:** Semi-Auto mở New Mail Legacy (đã có chữ ký) → điền To/Cc/Subject/Body → Send.
 
 ## Dành cho nhân viên văn phòng
 
@@ -19,8 +19,8 @@
 xattr -cr "/Applications/VT Rate Mail Sender.app"
 ```
 
-4. Mở app → Outlook đã login (Legacy Outlook ON) → Allow **Automation** / **Accessibility** nếu được hỏi
-5. Bấm **Chụp chữ ký Outlook** một lần (New Mail trống hiện chữ ký → app lưu) → rồi Semi-Auto
+4. Mở app → Outlook đã login (Legacy Outlook ON) → Allow **Automation** nếu được hỏi
+5. Semi-Auto: mỗi mail mở New Mail (có chữ ký) → điền To/Cc/Subject/Body → Send
 
 ### Windows
 1. Tải `VTRateMailSender.exe` (hoặc ZIP) từ [Releases](https://github.com/ThoongBuii/VT-Rate-Mail-Sender/releases)

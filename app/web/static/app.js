@@ -451,17 +451,6 @@ function applyState(s, forceHtml = false) {
   } else {
     setOutlookStatus("Outlook: chưa kết nối");
   }
-  const btnSig = document.getElementById("btnCaptureSig");
-  if (btnSig) {
-    const isMac = s.platform === "Darwin";
-    btnSig.hidden = !isMac;
-    if (isMac) {
-      btnSig.textContent = s.mac_signature_ready
-        ? "Chụp lại chữ ký"
-        : "Chụp chữ ký Outlook";
-      btnSig.title = s.mac_signature_message || "";
-    }
-  }
   if (forceHtml || !getComposeHtml()) {
     setComposeHtml(s.template_html || "");
   }
@@ -598,20 +587,6 @@ document.getElementById("btnOutlook").onclick = async () => {
   }
 };
 
-document.getElementById("btnCaptureSig").onclick = async () => {
-  try {
-    alert(
-      "Outlook sẽ mở New Mail trống ~3 giây để lấy chữ ký.\n" +
-        "Đừng đụng chuột/bàn phím cho đến khi có thông báo xong."
-    );
-    const res = await api("/api/outlook/capture-signature", { method: "POST" });
-    await refreshState();
-    alert(res.message || "Đã lưu chữ ký");
-  } catch (e) {
-    alert(e.message);
-  }
-};
-
 const editor = composeEl();
 editor.addEventListener("input", scheduleSaveCompose);
 editor.addEventListener("blur", () => {
@@ -718,12 +693,6 @@ document.getElementById("btnStart").onclick = async () => {
     };
     if (!getComposeHtml().trim()) {
       alert("Chưa có nội dung mail. Hãy soạn hoặc Ctrl+V từ Outlook vào khung soạn.");
-      return;
-    }
-    if (state?.platform === "Darwin" && !state.mac_signature_ready) {
-      alert(
-        "macOS: chưa chụp chữ ký.\nBấm «Chụp chữ ký Outlook» một lần (lấy chữ ký Amber), rồi Semi-Auto."
-      );
       return;
     }
     if (!confirm(`Đã kiểm tra Preview?\nGửi Semi-Auto · Delay ${payload.delay_min}–${payload.delay_max}s`))

@@ -9,7 +9,7 @@ from typing import Any, Optional
 from ..models import AgencyMail, AppConfig
 from ..sender_smtp import split_emails
 from ..template_engine import render_body_html, render_subject
-from .mac import MacOutlookSender, has_signature
+from .mac import MacOutlookSender
 from .windows import WindowsOutlookSender
 
 
@@ -45,8 +45,7 @@ class OutlookDesktopSender:
             label = self._mac.open_outlook()
             self._ready = True
             self._account_label = label
-            status = self._mac.signature_status()
-            return f"Outlook đã mở · {label} · {status['message']}"
+            return f"Outlook đã mở · {label} · New Mail Legacy (chữ ký sẵn)"
         if system == "Windows":
             try:
                 import win32com.client  # type: ignore
@@ -113,7 +112,7 @@ class OutlookDesktopSender:
         if platform.system() == "Darwin":
             st = self._mac.signature_status()
             note = st["message"]
-            mac_ready = bool(st["ready"])
+            mac_ready = True
 
         return {
             "to": mail.account_mail,

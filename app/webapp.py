@@ -171,7 +171,7 @@ class AppState:
             "outlook_ready": self.sender.is_ready,
             "outlook_account": self.sender.account_email,
             "platform": platform.system(),
-            "mac_signature_ready": bool(mac_sig.get("ready")),
+            "mac_signature_ready": True,
             "mac_signature_message": mac_sig.get("message") or "",
             "subject": self.subject,
             "attachment": self.attachment,

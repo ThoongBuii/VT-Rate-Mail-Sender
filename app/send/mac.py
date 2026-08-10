@@ -1,7 +1,8 @@
-"""macOS Legacy Outlook — chụp chữ ký 1 lần, gửi bằng set content (không Tab/Cmd+V)."""
+"""macOS Legacy Outlook — mở New Mail (chữ ký sẵn) → điền To/Cc/Subject/Body → Send."""
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -9,19 +10,7 @@ from typing import Optional
 
 from ..models import AppConfig
 from ..outlook_html import prepare_body_html_for_outlook
-from ..paths import user_data_dir
-from .html_merge import html_visible_text, merge_body_with_outlook_signature
-
-
-def signature_path() -> Path:
-    return user_data_dir() / "signature_mac.html"
-
-
-def has_signature() -> bool:
-    p = signature_path()
-    if not p.is_file():
-        return False
-    return len(html_visible_text(p.read_text(encoding="utf-8"))) >= 8
+from .html_merge import html_visible_text
 
 
 def _esc(s: str) -> str:
@@ -72,24 +61,6 @@ def _run_osascript(script: str, timeout: int = 180) -> str:
     return (result.stdout or "").strip()
 
 
-def _clipboard_html() -> str:
-    try:
-        from AppKit import NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeString  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError(
-            "Thiếu PyObjC (AppKit). Cài: pip install pyobjc-framework-Cocoa"
-        ) from exc
-
-    pb = NSPasteboard.generalPasteboard()
-    html = pb.stringForType_(NSPasteboardTypeHTML) or ""
-    if html.strip():
-        return str(html)
-    plain = pb.stringForType_(NSPasteboardTypeString) or ""
-    if plain.strip():
-        return f"<div>{plain}</div>"
-    return ""
-
-
 class MacOutlookSender:
     def __init__(self, config: AppConfig):
         self.config = config
@@ -112,124 +83,17 @@ class MacOutlookSender:
         return self.config.from_email or "Outlook (Mac)"
 
     def signature_status(self) -> dict:
-        ok = has_signature()
         return {
-            "ready": ok,
-            "path": str(signature_path()),
-            "message": (
-                "Đã có chữ ký Mac — sẵn sàng gửi."
-                if ok
-                else "Chưa chụp chữ ký. Bấm «Chụp chữ ký Outlook» (1 lần)."
-            ),
+            "ready": True,
+            "path": "",
+            "message": "macOS: New Mail Legacy tự có chữ ký — app điền To/Cc/Subject/Body rồi Send.",
         }
 
     def capture_signature(self) -> str:
-        """
-        Mở New Mail trống → chờ chữ ký UI → lấy HTML (content hoặc Copy)
-        → lưu signature_mac.html → đóng cửa sổ (không gửi).
-        """
-        self.open_outlook()
-        script = f'''
-tell application "Microsoft Outlook"
-  activate
-  set msg to make new outgoing message
-{_account_block(self.config.from_email)}
-  set subject of msg to "[VT-SIG-CAPTURE] — đóng sau khi app lấy chữ ký"
-  try
-    set accObj to account of msg
-    set sigs to signatures of accObj
-    if (count of sigs) > 0 then set signature of msg to item 1 of sigs
-  end try
-  try
-    if (count of signatures) > 0 then set signature of msg to item 1 of signatures
-  end try
-  open msg
-  delay 2.5
-  set mid to ""
-  try
-    set mid to (id of msg) as string
-  end try
-  set htmlSig to ""
-  try
-    set htmlSig to content of msg
-  end try
-  if (length of htmlSig) < 40 then
-    try
-      set htmlSig to plain text content of msg
-    end try
-  end if
-  return mid & "|||" & htmlSig
-end tell
-'''
-        out = _run_osascript(script)
-        mid, _, html = out.partition("|||")
-        html = html or ""
-
-        if len(html_visible_text(html)) < 12:
-            # Fallback: user-visible Copy body (1 lần khi chụp chữ ký)
-            copy_script = '''
-tell application "System Events"
-  if not UI elements enabled then
-    error "Bật Accessibility cho VT Rate Mail Sender"
-  end if
-  tell process "Microsoft Outlook"
-    set frontmost to true
-    delay 0.4
-    keystroke tab
-    delay 0.12
-    keystroke tab
-    delay 0.12
-    keystroke tab
-    delay 0.2
-    keystroke "a" using {command down}
-    delay 0.2
-    keystroke "c" using {command down}
-    delay 0.4
-  end tell
-end tell
-'''
-            try:
-                _run_osascript(copy_script)
-                html = _clipboard_html()
-            except Exception:  # noqa: BLE001
-                pass
-
-        if len(html_visible_text(html)) < 12:
-            # Đóng cửa sổ capture nếu có
-            self._delete_capture_message(mid)
-            raise RuntimeError(
-                "Không lấy được chữ ký từ New Mail.\n"
-                "Hãy: Legacy Outlook ON → New Mail tay vẫn thấy chữ ký → "
-                "bấm lại «Chụp chữ ký Outlook» và không đụng chuột trong ~3 giây."
-            )
-
-        signature_path().write_text(html, encoding="utf-8")
-        self._delete_capture_message(mid)
-        return f"Đã lưu chữ ký Mac ({len(html)} ký tự). Có thể Semi-Auto."
-
-    def _delete_capture_message(self, mid: str) -> None:
-        if not mid:
-            return
-        script = f'''
-tell application "Microsoft Outlook"
-  try
-    set msg to message id "{_esc(mid)}"
-    delete msg
-  end try
-  try
-    set msgs to (outgoing messages whose subject contains "[VT-SIG-CAPTURE]")
-    repeat with m in msgs
-      try
-        delete m
-      end try
-    end repeat
-  end try
-end tell
-'''
-        try:
-            _run_osascript(script, timeout=30)
-        except Exception:  # noqa: BLE001
-            pass
+        return (
+            "macOS không cần chụp chữ ký riêng — dùng New Mail Legacy "
+            "(chữ ký sẵn) khi Semi-Auto."
+        )
 
     def send(
         self,
@@ -239,21 +103,23 @@ end tell
         body_html: str,
         attachment: Optional[Path],
     ) -> None:
-        if not has_signature():
-            raise RuntimeError(
-                "Chưa chụp chữ ký Mac.\n"
-                "Bấm «Chụp chữ ký Outlook» một lần rồi gửi lại."
-            )
+        """
+        1 New Mail Legacy:
+        - set account + To/Cc/Subject (+ gắn signature property nếu có)
+        - open → chờ chữ ký hiện trong content
+        - chèn body phía trên chữ ký (set content = body & sig)
+        - send
+        """
         prepared = prepare_body_html_for_outlook(body_html)
         if not (prepared or "").strip():
             raise ValueError("Nội dung mail trống — không gửi.")
         if not to_list:
             raise ValueError("Thiếu địa chỉ To — không gửi.")
 
-        sig = signature_path().read_text(encoding="utf-8")
-        full_html = merge_body_with_outlook_signature(prepared, sig)
-        if len(html_visible_text(full_html)) < 8:
-            raise ValueError("Body+chữ ký trống sau merge — chụp lại chữ ký.")
+        probe_raw = re.sub(r"\s+", " ", html_visible_text(prepared)).strip()
+        probe = (probe_raw[:28] if len(probe_raw) >= 4 else "Dear").replace('"', "").replace(
+            "\\", ""
+        )
 
         to_block = "\n".join(
             f'  make new to recipient at msg with properties {{email address:{{address:"{_esc(t)}"}}}}'
@@ -272,29 +138,103 @@ end tell
             att_block = ""
 
         with tempfile.TemporaryDirectory() as tmp:
-            body_path = Path(tmp) / "full.html"
-            body_path.write_text(full_html, encoding="utf-8")
+            body_path = Path(tmp) / "body.html"
+            body_path.write_text(prepared, encoding="utf-8")
             script = f'''
 set bodyPath to "{body_path}"
 set bodyText to do shell script "cat " & quoted form of bodyPath
-if bodyText is "" then error "HTML trống"
+if bodyText is "" then error "Body HTML trống"
 
 tell application "Microsoft Outlook"
   activate
+
+  -- (1) Một New Mail
   set msg to make new outgoing message
 {_account_block(self.config.from_email)}
+
+  -- (2) Meta trước khi mở
   set subject of msg to "{_esc(subject)}"
 {to_block}
 {cc_block}
 {att_block}
-  set content of msg to bodyText
-  delay 0.3
+
+  -- Gắn chữ ký account nếu Outlook hỗ trợ
+  try
+    set accObj to account of msg
+    set sigs to signatures of accObj
+    if (count of sigs) > 0 then set signature of msg to item 1 of sigs
+  end try
+  try
+    if (count of signatures) > 0 then set signature of msg to item 1 of signatures
+  end try
+
+  -- (3) Mở → Legacy render chữ ký vào content (giống New Mail tay)
+  open msg
+  delay 1.2
+
+  set sigText to ""
+  repeat with i from 1 to 24
+    try
+      set sigText to content of msg
+    end try
+    if (length of sigText) > 40 then exit repeat
+    delay 0.25
+  end repeat
+
+  if (length of sigText) ≤ 40 then
+    try
+      if (count of signatures) > 0 then set signature of msg to item 1 of signatures
+    end try
+    delay 1.0
+    try
+      set sigText to content of msg
+    end try
+  end if
+
+  -- (4) Body phía trên chữ ký — 1 cửa sổ, không tạo mail 2
+  try
+    set content of msg to bodyText & sigText
+  on error
+    try
+      set content of msg to bodyText & return & sigText
+    on error
+      set content of msg to bodyText
+    end try
+  end try
+
+  delay 0.45
+
+  set finalContent to ""
+  try
+    set finalContent to content of msg
+  end try
+  if finalContent is "" then
+    try
+      set finalContent to plain text content of msg
+    end try
+  end if
+  if finalContent does not contain "{_esc(probe)}" then
+    error "Body chưa vào New Mail — hủy Send. Đóng Untitled, Legacy ON, thử 1 mail."
+  end if
+
   set toCount to 0
   try
     set toCount to count of (to recipients of msg)
   end try
   if toCount < 1 then error "To trống — hủy gửi"
+
+  -- (5) Gửi
   send msg
 end tell
 '''
-            _run_osascript(script, timeout=180)
+            try:
+                _run_osascript(script, timeout=180)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "Outlook Mac gửi thất bại.\n"
+                    f"{exc}\n"
+                    "Gợi ý:\n"
+                    "- Legacy Outlook ON\n"
+                    "- Account overseas login, New Mail tay vẫn có chữ ký\n"
+                    "- Xóa Outbox + đóng Untitled rồi thử 1 mail"
+                ) from exc
