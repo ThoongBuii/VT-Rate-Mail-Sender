@@ -489,14 +489,19 @@ end tell
         attachment: Optional[Path],
     ) -> None:
         """
-        Legacy Outlook Mac — MỘT thao tác duy nhất (không tạo mail thứ 2):
-        New Mail → gắn chữ ký (account/default) → chèn body phía trên → gửi.
+        Legacy Outlook Mac — đúng 1 New Mail (giống tay):
+        1) Tạo mail + set To/Cc/Subject trước
+        2) open → chờ chữ ký hiện trong content
+        3) chèn body phía trên chữ ký
+        4) gửi một lần
         """
         from .outlook_html import prepare_body_html_for_outlook
 
         prepared = prepare_body_html_for_outlook(body_html)
         if not (prepared or "").strip():
             raise ValueError("Nội dung mail trống — không gửi.")
+        if not to_list:
+            raise ValueError("Thiếu địa chỉ To — không gửi.")
 
         def esc(s: str) -> str:
             return (s or "").replace("\\", "\\\\").replace('"', '\\"')
@@ -547,7 +552,6 @@ end tell
             body_path = Path(tmp) / "body.html"
             body_path.write_text(prepared, encoding="utf-8")
 
-            # Một script duy nhất — tránh trùng New Mail / Outbox rỗng
             script = f'''
 set bodyPath to "{body_path}"
 set bodyText to do shell script "cat " & quoted form of bodyPath
@@ -555,61 +559,84 @@ if bodyText is "" then error "Body HTML trống"
 
 tell application "Microsoft Outlook"
   activate
+
+  -- (1) Một New Mail duy nhất
   set msg to make new outgoing message
   {account_block}
 
-  -- Gắn chữ ký mặc định của account (nếu có trong Outlook)
+  -- (2) Set meta TRƯỚC khi mở (tránh To trống / Untitled lỗi)
+  set subject of msg to "{esc(subject)}"
+{to_block}
+{cc_block}
+
+  -- Gắn chữ ký account nếu Outlook hỗ trợ (trước khi open)
   try
     set accObj to account of msg
     set sigs to signatures of accObj
-    if (count of sigs) > 0 then
-      set signature of msg to item 1 of sigs
-    end if
+    if (count of sigs) > 0 then set signature of msg to item 1 of sigs
   end try
   try
-    set allSigs to signatures
-    if (count of allSigs) > 0 then
-      set signature of msg to item 1 of allSigs
-    end if
+    if (count of signatures) > 0 then set signature of msg to item 1 of signatures
   end try
 
+  -- (3) Mở để Outlook render chữ ký vào content (giống New Mail tay)
   open msg
-  delay 1.6
+  delay 0.8
 
-  set subject of msg to "{esc(subject)}"
-
-  -- Lấy phần chữ ký đã hiện trong New Mail, rồi chèn body phía trên
   set sigText to ""
-  try
-    set sigText to content of msg
-  end try
+  repeat with i from 1 to 20
+    try
+      set sigText to content of msg
+    end try
+    if (length of sigText) > 30 then exit repeat
+    delay 0.25
+  end repeat
 
+  -- Nếu content vẫn ngắn: thử gắn lại chữ ký rồi chờ thêm
+  if (length of sigText) ≤ 30 then
+    try
+      if (count of signatures) > 0 then set signature of msg to item 1 of signatures
+    end try
+    delay 1.0
+    try
+      set sigText to content of msg
+    end try
+  end if
+
+  -- (4) Chèn body phía trên chữ ký — KHÔNG tạo mail thứ 2
   try
     set content of msg to bodyText & sigText
   on error
     try
-      set content of msg to bodyText
+      set content of msg to bodyText & return & sigText
     on error
-      set plain text content of msg to bodyText
+      set content of msg to bodyText
     end try
   end try
 
-  -- Kiểm tra body không trống trước khi gửi
-  set checkContent to ""
+  delay 0.4
+
+  -- Kiểm tra trước gửi
+  set finalContent to ""
   try
-    set checkContent to content of msg
+    set finalContent to content of msg
   end try
-  if checkContent is "" then
+  if finalContent is "" then
     try
-      set checkContent to plain text content of msg
+      set finalContent to plain text content of msg
     end try
   end if
-  if checkContent is "" then error "Outlook Mac: content vẫn trống sau khi dán body — hủy gửi."
+  if finalContent is "" then error "Content trống sau khi dán — hủy gửi."
 
-{to_block}
-{cc_block}
+  set toCount to 0
+  try
+    set toCount to count of (to recipients of msg)
+  end try
+  if toCount < 1 then error "To trống — hủy gửi."
+
 {att_block}
 
+  -- (5) Gửi một lần
   send msg
 end tell
 '''
@@ -623,9 +650,8 @@ end tell
                 raise RuntimeError(
                     "Outlook Mac gửi thất bại.\n"
                     + (result.stderr or result.stdout or "")
-                    + "\nCần Legacy Outlook (tắt New Outlook), đã login, "
-                    "và đã cấu hình chữ ký cho account gửi.\n"
-                    "Xóa các mail trống trong Outbox rồi thử lại 1 mail."
+                    + "\nTrước khi thử lại: xóa Outbox + đóng hết cửa sổ Untitled/New Mail.\n"
+                    "Cần Legacy Outlook ON, account overseas đã login, chữ ký New Mail tay OK."
                 )
 
     def _windows_pick_account(self, outlook: Any):
