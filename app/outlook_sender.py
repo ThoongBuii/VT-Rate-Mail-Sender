@@ -480,6 +480,34 @@ end tell
         else:
             raise RuntimeError(f"Hệ điều hành chưa hỗ trợ: {system}")
 
+    @staticmethod
+    def _mac_set_html_clipboard(html: str) -> None:
+        """Đặt HTML lên clipboard Mac để dán vào New Mail (giữ chữ ký UI)."""
+        import re
+
+        try:
+            from AppKit import NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeString  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "Thiếu PyObjC (AppKit) để dán HTML vào Outlook Mac.\n"
+                "Dùng bản build macOS hoặc: pip install pyobjc-framework-Cocoa"
+            ) from exc
+
+        plain = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html or "")
+        plain = re.sub(r"(?is)<br\s*/?>", "\n", plain)
+        plain = re.sub(r"(?is)</p>", "\n", plain)
+        plain = re.sub(r"<[^>]+>", " ", plain)
+        plain = re.sub(r"[ \t]+\n", "\n", plain)
+        plain = re.sub(r"\n{3,}", "\n\n", plain)
+        plain = re.sub(r"[ \t]{2,}", " ", plain).strip()
+
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        ok_html = pb.setString_forType_(html, NSPasteboardTypeHTML)
+        ok_plain = pb.setString_forType_(plain or " ", NSPasteboardTypeString)
+        if not ok_html and not ok_plain:
+            raise RuntimeError("Không ghi được clipboard HTML trên macOS.")
+
     def _send_mac(
         self,
         to_list: list[str],
@@ -489,11 +517,9 @@ end tell
         attachment: Optional[Path],
     ) -> None:
         """
-        Legacy Outlook Mac — đúng 1 New Mail (giống tay):
-        1) Tạo mail + set To/Cc/Subject trước
-        2) open → chờ chữ ký hiện trong content
-        3) chèn body phía trên chữ ký
-        4) gửi một lần
+        Legacy Outlook Mac — đúng 1 New Mail (giống gửi tay):
+        New Mail (To/Cc/Subject) → chờ chữ ký hiện trên UI → Cmd+V body → gửi.
+        Không dùng `set content` (trên Mac sẽ ghi đè/xóa chữ ký UI).
         """
         from .outlook_html import prepare_body_html_for_outlook
 
@@ -525,134 +551,104 @@ end tell
         account_block = ""
         if self.config.from_email:
             fe = esc(self.config.from_email)
-            account_block = f'''
-  try
-    repeat with acc in (get exchange accounts)
-      try
-        if (email address of acc as string) contains "{fe}" then
-          set account of msg to acc
-          exit repeat
-        end if
-      end try
-    end repeat
-  end try
-  try
-    repeat with acc in (get imap accounts)
-      try
-        if (email address of acc as string) contains "{fe}" then
-          set account of msg to acc
-          exit repeat
-        end if
-      end try
-    end repeat
-  end try
-'''
-
-        with tempfile.TemporaryDirectory() as tmp:
-            body_path = Path(tmp) / "body.html"
-            body_path.write_text(prepared, encoding="utf-8")
-
-            script = f'''
-set bodyPath to "{body_path}"
-set bodyText to do shell script "cat " & quoted form of bodyPath
-if bodyText is "" then error "Body HTML trống"
-
-tell application "Microsoft Outlook"
-  activate
-
-  -- (1) Một New Mail duy nhất
-  set msg to make new outgoing message
-  {account_block}
-
-  -- (2) Set meta TRƯỚC khi mở (tránh To trống / Untitled lỗi)
-  set subject of msg to "{esc(subject)}"
-{to_block}
-{cc_block}
-
-  -- Gắn chữ ký account nếu Outlook hỗ trợ (trước khi open)
-  try
-    set accObj to account of msg
-    set sigs to signatures of accObj
-    if (count of sigs) > 0 then set signature of msg to item 1 of sigs
-  end try
-  try
-    if (count of signatures) > 0 then set signature of msg to item 1 of signatures
-  end try
-
-  -- (3) Mở để Outlook render chữ ký vào content (giống New Mail tay)
-  open msg
-  delay 0.8
-
-  set sigText to ""
-  repeat with i from 1 to 20
-    try
-      set sigText to content of msg
-    end try
-    if (length of sigText) > 30 then exit repeat
-    delay 0.25
-  end repeat
-
-  -- Nếu content vẫn ngắn: thử gắn lại chữ ký rồi chờ thêm
-  if (length of sigText) ≤ 30 then
-    try
-      if (count of signatures) > 0 then set signature of msg to item 1 of signatures
-    end try
-    delay 1.0
-    try
-      set sigText to content of msg
-    end try
-  end if
-
-  -- (4) Chèn body phía trên chữ ký — KHÔNG tạo mail thứ 2
-  try
-    set content of msg to bodyText & sigText
-  on error
-    try
-      set content of msg to bodyText & return & sigText
-    on error
-      set content of msg to bodyText
-    end try
-  end try
-
-  delay 0.4
-
-  -- Kiểm tra trước gửi
-  set finalContent to ""
-  try
-    set finalContent to content of msg
-  end try
-  if finalContent is "" then
-    try
-      set finalContent to plain text content of msg
-    end try
-  end if
-  if finalContent is "" then error "Content trống sau khi dán — hủy gửi."
-
-  set toCount to 0
-  try
-    set toCount to count of (to recipients of msg)
-  end try
-  if toCount < 1 then error "To trống — hủy gửi."
-
-{att_block}
-
-  -- (5) Gửi một lần
-  send msg
-end tell
-'''
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True,
-                timeout=180,
+            account_block = (
+                "\n"
+                "  try\n"
+                "    repeat with acc in (get exchange accounts)\n"
+                "      try\n"
+                f'        if (email address of acc as string) contains "{fe}" then\n'
+                "          set account of msg to acc\n"
+                "          exit repeat\n"
+                "        end if\n"
+                "      end try\n"
+                "    end repeat\n"
+                "  end try\n"
+                "  try\n"
+                "    repeat with acc in (get imap accounts)\n"
+                "      try\n"
+                f'        if (email address of acc as string) contains "{fe}" then\n'
+                "          set account of msg to acc\n"
+                "          exit repeat\n"
+                "        end if\n"
+                "      end try\n"
+                "    end repeat\n"
+                "  end try\n"
             )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    "Outlook Mac gửi thất bại.\n"
-                    + (result.stderr or result.stdout or "")
-                    + "\nTrước khi thử lại: xóa Outbox + đóng hết cửa sổ Untitled/New Mail.\n"
-                    "Cần Legacy Outlook ON, account overseas đã login, chữ ký New Mail tay OK."
-                )
+
+        # Clipboard paste — không set content (tránh mất chữ ký UI trên Mac).
+        self._mac_set_html_clipboard(prepared)
+
+        # 1 New Mail: To/Cc/Subject → open (chữ ký UI) → dán body → send cùng msg.
+        script = (
+            'tell application "Microsoft Outlook"\n'
+            "  activate\n"
+            "  set msg to make new outgoing message\n"
+            f"{account_block}"
+            f'  set subject of msg to "{esc(subject)}"\n'
+            f"{to_block}\n"
+            f"{cc_block}\n"
+            f"{att_block}\n"
+            "  open msg\n"
+            "  delay 1.6\n"
+            "end tell\n"
+            "\n"
+            'tell application "System Events"\n'
+            "  if not UI elements enabled then\n"
+            '    error "Cần bật Accessibility: System Settings → Privacy & Security → Accessibility → VT Rate Mail Sender / Terminal / osascript"\n'
+            "  end if\n"
+            '  tell process "Microsoft Outlook"\n'
+            "    set frontmost to true\n"
+            "    delay 0.35\n"
+            "    -- Ưu tiên click vùng soạn (giữ caret phía trên chữ ký); fallback Tab → body\n"
+            "    try\n"
+            "      set win to front window\n"
+            "      try\n"
+            "        click (first text area of win)\n"
+            "      on error\n"
+            "        try\n"
+            "          click (first scroll area of win)\n"
+            "        on error\n"
+            "          keystroke tab\n"
+            "          delay 0.12\n"
+            "          keystroke tab\n"
+            "          delay 0.12\n"
+            "        end try\n"
+            "      end try\n"
+            "    end try\n"
+            "    delay 0.2\n"
+            "    -- Đưa caret về đầu body (trên chữ ký), rồi dán HTML\n"
+            "    key code 126 using {command down}\n"
+            "    delay 0.15\n"
+            '    keystroke "v" using {command down}\n'
+            "    delay 1.0\n"
+            "  end tell\n"
+            "end tell\n"
+            "\n"
+            'tell application "Microsoft Outlook"\n'
+            "  set toCount to 0\n"
+            "  try\n"
+            "    set toCount to count of (to recipients of msg)\n"
+            "  end try\n"
+            '  if toCount < 1 then error "To trống — hủy gửi"\n'
+            "  send msg\n"
+            "end tell\n"
+        )
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "Outlook Mac gửi thất bại.\n"
+                + (result.stderr or result.stdout or "")
+                + "\nGợi ý:\n"
+                "- Legacy Outlook ON\n"
+                "- Xóa Outbox + đóng Untitled\n"
+                "- System Settings → Privacy → Accessibility: cho phép VT Rate Mail Sender\n"
+                "- New Mail tay vẫn có chữ ký"
+            )
 
     def _windows_pick_account(self, outlook: Any):
         if not self.config.from_email:

@@ -48,6 +48,12 @@ if sys.platform == "win32":
         "webview.platforms.edgechromium",
         "clr_loader",
     ]
+elif sys.platform == "darwin":
+    hiddenimports += [
+        "AppKit",
+        "Foundation",
+        "objc",
+    ]
 
 a = Analysis(
     [str(root / "run.py")],
