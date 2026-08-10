@@ -42,7 +42,7 @@ function getComposeHtml() {
   return normalizeHtmlForOutlook(html);
 }
 
-/** Bọc / chuẩn hóa font+bảng inline để Outlook New Mail khớp editor. */
+/** Chuẩn hóa nhẹ cho Outlook — KHÔNG ép đè font user đã chọn trên toolbar. */
 function normalizeHtmlForOutlook(html) {
   const trimmed = (html || "").trim();
   if (!trimmed) return "";
@@ -58,20 +58,7 @@ function normalizeHtmlForOutlook(html) {
     if (!t.getAttribute("cellpadding")) t.setAttribute("cellpadding", "4");
   });
 
-  box.querySelectorAll("td, th").forEach((cell) => {
-    if (!cell.style.fontFamily) cell.style.fontFamily = OUTLOOK_FONT_STACK;
-    if (!cell.style.fontSize) cell.style.fontSize = "10pt";
-    if (!cell.style.verticalAlign) cell.style.verticalAlign = "middle";
-  });
-
-  box.querySelectorAll("p, div, li").forEach((el) => {
-    if (el.closest("table")) return;
-    if (el.getAttribute("data-vt-body") === "1") return;
-    if (!el.style.fontFamily) el.style.fontFamily = OUTLOOK_FONT_STACK;
-    if (!el.style.fontSize) el.style.fontSize = `${DEFAULT_SIZE_PT}pt`;
-  });
-
-  // px → pt trên style inline
+  // px → pt trên style inline (giữ nguyên font-family user chọn)
   box.querySelectorAll("[style]").forEach((el) => {
     const s = el.getAttribute("style") || "";
     const next = s.replace(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi, (_, px) => {
@@ -82,18 +69,11 @@ function normalizeHtmlForOutlook(html) {
   });
 
   let root = box.firstElementChild;
-  if (
-    root &&
-    root.tagName === "DIV" &&
-    (root.getAttribute("data-vt-body") === "1" ||
-      /Aptos/i.test(root.style.fontFamily || ""))
-  ) {
+  if (root && root.tagName === "DIV" && box.childNodes.length === 1) {
     root.setAttribute("data-vt-body", "1");
-    if (!root.style.fontFamily) root.style.fontFamily = OUTLOOK_FONT_STACK;
-    if (!root.style.fontSize) root.style.fontSize = `${DEFAULT_SIZE_PT}pt`;
+    root.style.margin = root.style.margin || "0";
+    root.style.padding = root.style.padding || "0";
     root.style.lineHeight = root.style.lineHeight || "1.35";
-    root.style.margin = "0";
-    root.style.padding = "0";
     return box.innerHTML;
   }
 
@@ -101,7 +81,7 @@ function normalizeHtmlForOutlook(html) {
   wrap.setAttribute("data-vt-body", "1");
   wrap.setAttribute(
     "style",
-    `font-family:${OUTLOOK_FONT_STACK};font-size:${DEFAULT_SIZE_PT}pt;color:#222;line-height:1.35;margin:0;padding:0;`
+    `line-height:1.35;margin:0;padding:0;color:#222;`
   );
   while (box.firstChild) wrap.appendChild(box.firstChild);
   return wrap.outerHTML;
@@ -130,7 +110,127 @@ function focusEditor() {
   ed.focus();
 }
 
+/** Lưu/khôi phục selection — dropdown toolbar hay làm mất vùng bôi đen. */
+let savedEditorRange = null;
+
+function saveEditorSelection() {
+  const ed = composeEl();
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  if (!ed.contains(range.commonAncestorContainer)) return;
+  savedEditorRange = range.cloneRange();
+}
+
+function restoreEditorSelection() {
+  const ed = composeEl();
+  ed.focus();
+  if (!savedEditorRange) return false;
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  try {
+    sel.addRange(savedEditorRange);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function rangeIntersectsNode(range, node) {
+  try {
+    if (typeof range.intersectsNode === "function") {
+      return range.intersectsNode(node);
+    }
+  } catch (_) {}
+  const nodeRange = document.createRange();
+  try {
+    nodeRange.selectNode(node);
+  } catch (_) {
+    nodeRange.selectNodeContents(node);
+  }
+  return (
+    range.compareBoundaryPoints(Range.END_TO_START, nodeRange) < 0 &&
+    range.compareBoundaryPoints(Range.START_TO_END, nodeRange) > 0
+  );
+}
+
+/**
+ * Áp style lên TOÀN BỘ vùng bôi đen (mọi thẻ con: p/span/td/font…).
+ * Không dựa vào execCommand(fontName) — hay bỏ sót Dear / ô bảng.
+ */
+function applyStyleToSelection(styleMap) {
+  const ed = composeEl();
+  restoreEditorSelection();
+  focusEditor();
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return;
+
+  let range = sel.getRangeAt(0);
+  if (range.collapsed && savedEditorRange && !savedEditorRange.collapsed) {
+    sel.removeAllRanges();
+    sel.addRange(savedEditorRange);
+    range = sel.getRangeAt(0);
+  }
+
+  if (range.collapsed) {
+    const parts = [];
+    if (styleMap.fontFamily) parts.push(`font-family:${styleMap.fontFamily}`);
+    if (styleMap.fontSize) parts.push(`font-size:${styleMap.fontSize}`);
+    if (styleMap.color) parts.push(`color:${styleMap.color}`);
+    if (styleMap.backgroundColor) parts.push(`background-color:${styleMap.backgroundColor}`);
+    if (parts.length) wrapSelectionWithSpan(parts.join(";"));
+    return;
+  }
+
+  const targets = [];
+  const walker = document.createTreeWalker(ed, NodeFilter.SHOW_ELEMENT, null);
+  let node = walker.nextNode();
+  while (node) {
+    if (rangeIntersectsNode(range, node)) {
+      const tag = node.tagName;
+      if (tag !== "TABLE" && tag !== "TBODY" && tag !== "THEAD" && tag !== "TR" && tag !== "COLGROUP") {
+        targets.push(node);
+      }
+    }
+    node = walker.nextNode();
+  }
+
+  // Nếu không bắt được thẻ (chỉ text thuần) → bọc span
+  if (!targets.length) {
+    const parts = [];
+    if (styleMap.fontFamily) parts.push(`font-family:${styleMap.fontFamily}`);
+    if (styleMap.fontSize) parts.push(`font-size:${styleMap.fontSize}`);
+    if (styleMap.color) parts.push(`color:${styleMap.color}`);
+    if (styleMap.backgroundColor) parts.push(`background-color:${styleMap.backgroundColor}`);
+    wrapSelectionWithSpan(parts.join(";"));
+    return;
+  }
+
+  targets.forEach((el) => {
+    if (styleMap.fontFamily) {
+      el.style.fontFamily = styleMap.fontFamily;
+      if (el.tagName === "FONT") el.removeAttribute("face");
+    }
+    if (styleMap.fontSize) {
+      el.style.fontSize = styleMap.fontSize;
+      if (el.tagName === "FONT") el.removeAttribute("size");
+    }
+    if (styleMap.color) {
+      el.style.color = styleMap.color;
+      if (el.tagName === "FONT") el.removeAttribute("color");
+    }
+    if (styleMap.backgroundColor) {
+      el.style.backgroundColor = styleMap.backgroundColor;
+    }
+  });
+
+  scheduleSaveCompose();
+  syncFormatToolbar();
+  saveEditorSelection();
+}
+
 function runFormat(cmd, value = null) {
+  restoreEditorSelection();
   focusEditor();
   try {
     document.execCommand("styleWithCSS", false, true);
@@ -138,15 +238,16 @@ function runFormat(cmd, value = null) {
   document.execCommand(cmd, false, value);
   scheduleSaveCompose();
   syncFormatToolbar();
+  saveEditorSelection();
 }
 
 function wrapSelectionWithSpan(styleText) {
+  restoreEditorSelection();
   focusEditor();
   const sel = window.getSelection();
   if (!sel || !sel.rangeCount) return;
   const range = sel.getRangeAt(0);
   if (range.collapsed) {
-    // Áp dụng kiểu cho chữ sắp gõ: chèn span rỗng + caret vào trong
     const span = document.createElement("span");
     span.setAttribute("style", styleText);
     span.appendChild(document.createTextNode("\u200b"));
@@ -156,6 +257,7 @@ function wrapSelectionWithSpan(styleText) {
     sel.removeAllRanges();
     sel.addRange(range);
     scheduleSaveCompose();
+    saveEditorSelection();
     return;
   }
   try {
@@ -171,26 +273,27 @@ function wrapSelectionWithSpan(styleText) {
   }
   scheduleSaveCompose();
   syncFormatToolbar();
+  saveEditorSelection();
 }
 
 function applyFontFamily(name) {
-  const font = name || DEFAULT_FONT;
-  focusEditor();
-  try {
-    document.execCommand("styleWithCSS", false, true);
-  } catch (_) {}
-  // fontName tạo font-family inline — Outlook đọc tốt
-  const ok = document.execCommand("fontName", false, font);
-  if (!ok) {
-    wrapSelectionWithSpan(`font-family:${font}, Calibri, Arial, sans-serif`);
-  }
-  scheduleSaveCompose();
-  syncFormatToolbar();
+  const font = (name || DEFAULT_FONT).trim();
+  // Stack nhẹ để Outlook fallback nếu máy thiếu font
+  const stack = font.includes(",") ? font : `${font}, Calibri, Arial, sans-serif`;
+  applyStyleToSelection({ fontFamily: stack });
 }
 
 function applyFontSizePt(pt) {
-  const size = String(pt || DEFAULT_SIZE_PT);
-  wrapSelectionWithSpan(`font-size:${size}pt`);
+  const size = `${String(pt || DEFAULT_SIZE_PT)}pt`;
+  applyStyleToSelection({ fontSize: size });
+}
+
+function applyForeColor(color) {
+  applyStyleToSelection({ color });
+}
+
+function applyHiliteColor(color) {
+  applyStyleToSelection({ backgroundColor: color });
 }
 
 function syncFormatToolbar() {
@@ -223,44 +326,53 @@ function initFormatToolbar() {
   const bar = document.getElementById("formatBar");
   if (!bar) return;
 
-  // Giữ selection khi click toolbar
+  // Giữ selection khi click toolbar (kể cả lúc mở dropdown)
   bar.addEventListener("mousedown", (ev) => {
+    saveEditorSelection();
     if (ev.target.closest("select, input")) return;
     ev.preventDefault();
   });
 
   bar.querySelectorAll(".fmt-btn[data-fmt]").forEach((btn) => {
     btn.addEventListener("click", () => {
+      restoreEditorSelection();
       const cmd = btn.getAttribute("data-fmt");
       runFormat(cmd);
     });
   });
 
+  document.getElementById("fmtFont").addEventListener("focus", saveEditorSelection);
+  document.getElementById("fmtSize").addEventListener("focus", saveEditorSelection);
   document.getElementById("fmtFont").addEventListener("change", (ev) => {
     applyFontFamily(ev.target.value);
   });
   document.getElementById("fmtSize").addEventListener("change", (ev) => {
     applyFontSizePt(ev.target.value);
   });
+  document.getElementById("fmtForeColor").addEventListener("focus", saveEditorSelection);
+  document.getElementById("fmtHilite").addEventListener("focus", saveEditorSelection);
   document.getElementById("fmtForeColor").addEventListener("input", (ev) => {
-    runFormat("foreColor", ev.target.value);
+    applyForeColor(ev.target.value);
   });
   document.getElementById("fmtHilite").addEventListener("input", (ev) => {
-    // hiliteColor (WebKit) / backColor
-    focusEditor();
-    try {
-      document.execCommand("styleWithCSS", false, true);
-    } catch (_) {}
-    if (!document.execCommand("hiliteColor", false, ev.target.value)) {
-      document.execCommand("backColor", false, ev.target.value);
-    }
-    scheduleSaveCompose();
+    applyHiliteColor(ev.target.value);
   });
 
   const ed = composeEl();
-  ed.addEventListener("keyup", syncFormatToolbar);
-  ed.addEventListener("mouseup", syncFormatToolbar);
+  ed.addEventListener("keyup", () => {
+    saveEditorSelection();
+    syncFormatToolbar();
+  });
+  ed.addEventListener("mouseup", () => {
+    saveEditorSelection();
+    syncFormatToolbar();
+  });
   ed.addEventListener("focus", syncFormatToolbar);
+  document.addEventListener("selectionchange", () => {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    if (ed.contains(sel.anchorNode)) saveEditorSelection();
+  });
 }
 
 function insertHtmlAtCursor(html) {

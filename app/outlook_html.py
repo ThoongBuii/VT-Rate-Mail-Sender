@@ -42,7 +42,7 @@ def convert_px_font_sizes_to_pt(html: str) -> str:
 
 
 def harden_tables_for_outlook(html: str) -> str:
-    """Giữ layout bảng khi Outlook Word render lại HTMLBody."""
+    """Giữ layout bảng khi Outlook Word render lại HTMLBody — không ép font."""
 
     def _table_repl(m: re.Match[str]) -> str:
         tag = m.group(0)
@@ -59,11 +59,7 @@ def harden_tables_for_outlook(html: str) -> str:
         new_style = _merge_style(style, add)
 
         if sm:
-            tag = (
-                tag[: sm.start()]
-                + f' style="{new_style}"'
-                + tag[sm.end() :]
-            )
+            tag = tag[: sm.start()] + f' style="{new_style}"' + tag[sm.end() :]
         else:
             tag = re.sub(r"^<table\b", f'<table style="{new_style}"', tag, count=1, flags=re.I)
 
@@ -83,16 +79,9 @@ def harden_tables_for_outlook(html: str) -> str:
         sm = re.search(r"""\sstyle\s*=\s*["']([^"']*)["']""", full, flags=re.I)
         if sm:
             style = sm.group(1)
-        add_parts: list[str] = []
-        if not _has_css(style, "font-family"):
-            add_parts.append(f"font-family:{DEFAULT_FONT_STACK}")
-        if not _has_css(style, "font-size"):
-            add_parts.append(f"font-size:{TABLE_CELL_SIZE_PT}")
-        if not _has_css(style, "vertical-align"):
-            add_parts.append("vertical-align:middle")
-        if not add_parts:
+        if _has_css(style, "vertical-align"):
             return full
-        new_style = _merge_style(style, ";".join(add_parts))
+        new_style = _merge_style(style, "vertical-align:middle")
         if sm:
             return full[: sm.start()] + f' style="{new_style}"' + full[sm.end() :]
         return re.sub(
@@ -107,51 +96,8 @@ def harden_tables_for_outlook(html: str) -> str:
 
 
 def ensure_inline_fonts(html: str, *, in_table: bool = False) -> str:
-    """
-    Ép font Aptos lên block văn bản (p/div/li…) thiếu font-family —
-    tránh 'Dear' bị Outlook gán font mặc định khác với phần còn lại.
-    Không đụng vào bảng (harden_tables đã xử lý cell).
-    """
-
-    def _tag_repl(m: re.Match[str]) -> str:
-        full = m.group(0)
-        tag = m.group(1).lower()
-        # Bỏ qua nếu nằm trong table — xử lý thô: không inject div/p bên trong table ở bước riêng
-        style = ""
-        sm = re.search(r"""\sstyle\s*=\s*["']([^"']*)["']""", full, flags=re.I)
-        if sm:
-            style = sm.group(1)
-        add: list[str] = []
-        if not _has_css(style, "font-family"):
-            add.append(f"font-family:{DEFAULT_FONT_STACK}")
-        if tag in {"p", "div", "li"} and not _has_css(style, "font-size"):
-            add.append(f"font-size:{DEFAULT_SIZE_PT}")
-        if not add:
-            return full
-        new_style = _merge_style(style, ";".join(add))
-        if sm:
-            return full[: sm.start()] + f' style="{new_style}"' + full[sm.end() :]
-        return re.sub(
-            rf"^<{tag}\b",
-            f'<{tag} style="{new_style}"',
-            full,
-            count=1,
-            flags=re.I,
-        )
-
-    # Tách table ra → chỉ ensure font vùng ngoài bảng
-    parts: list[str] = []
-    last = 0
-    for tm in re.finditer(r"(?is)<table\b.*?</table>", html or ""):
-        outside = html[last : tm.start()]
-        parts.append(
-            re.sub(r"<(p|div|li)\b[^>]*>", _tag_repl, outside, flags=re.I)
-        )
-        parts.append(tm.group(0))
-        last = tm.end()
-    outside = (html or "")[last:]
-    parts.append(re.sub(r"<(p|div|li)\b[^>]*>", _tag_repl, outside, flags=re.I))
-    return "".join(parts)
+    """Không ép font cố định — font do user chọn trên thanh công cụ."""
+    return html or ""
 
 
 def wrap_root_body(html: str) -> str:
@@ -163,20 +109,8 @@ def wrap_root_body(html: str) -> str:
         s,
     ):
         return s
-    if re.search(
-        r"""(?is)^\s*<div\b[^>]*style\s*=\s*["'][^"']*font-family\s*:\s*[^"']*Aptos""",
-        s,
-    ):
-        # Gắn marker để lần sau không bọc chồng
-        return re.sub(
-            r"(?i)^\s*<div\b",
-            '<div data-vt-body="1"',
-            s,
-            count=1,
-        )
     return (
-        f'<div data-vt-body="1" style="font-family:{DEFAULT_FONT_STACK};'
-        f'font-size:{DEFAULT_SIZE_PT};color:#222;line-height:1.35;margin:0;padding:0;">'
+        f'<div data-vt-body="1" style="line-height:1.35;margin:0;padding:0;color:#222;">'
         f"{s}</div>"
     )
 
