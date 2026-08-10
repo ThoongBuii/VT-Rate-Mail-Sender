@@ -492,11 +492,14 @@ end tell
     ) -> None:
         """
         Mac Classic Outlook: tạo outgoing message (Outlook có thể gắn chữ ký),
-        rồi chèn nội dung app phía trên — không thay thế toàn bộ content bằng body thuần.
+        rồi chèn nội dung HTML vào content — không đính file .htm.
         """
+        from .outlook_html import prepare_body_html_for_outlook
+
+        prepared = prepare_body_html_for_outlook(body_html)
         with tempfile.TemporaryDirectory() as tmp:
             html_path = Path(tmp) / "body.html"
-            html_path.write_text(body_html, encoding="utf-8")
+            html_path.write_text(prepared, encoding="utf-8")
 
             def esc(s: str) -> str:
                 return (s or "").replace("\\", "\\\\").replace('"', '\\"')
@@ -845,42 +848,40 @@ end tell
                 break
         return removed
 
-    def _windows_insert_body_via_word(self, mail_item: Any, body_html: str) -> bool:
+    def _windows_apply_body_keep_signature(self, mail_item: Any, body_html: str) -> None:
         """
-        Chèn body vào đầu message bằng WordEditor (giống gõ/dán phía trên chữ ký).
-        Giữ ảnh cid chữ ký; cắt dòng trống đầu New Mail.
+        Chèn nội dung HTML vào thân mail (không đính file .htm),
+        giữ chữ ký Outlook + cắt khoảng trống đầu / trước Best Regards.
         """
-        from .outlook_html import DEFAULT_FONT_STACK, DEFAULT_SIZE_PT
-
+        word_doc = None
         try:
             insp = mail_item.GetInspector
             word_doc = insp.WordEditor
-            if word_doc is None:
-                return False
         except Exception:  # noqa: BLE001
-            return False
+            word_doc = None
 
-        self._windows_delete_leading_empty_paragraphs(word_doc)
+        if word_doc is not None:
+            self._windows_delete_leading_empty_paragraphs(word_doc)
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "vt_body.htm"
-            doc_html = (
-                "<html><head><meta http-equiv=\"Content-Type\" "
-                'content="text/html; charset=utf-8">'
-                f"<style>body{{font-family:{DEFAULT_FONT_STACK};font-size:{DEFAULT_SIZE_PT};"
-                "color:#222;margin:0;padding:0;}"
-                "p{margin:0 0 0.6em;} table{border-collapse:collapse;}</style>"
-                f"</head><body>{body_html}</body></html>"
-            )
-            path.write_text(doc_html, encoding="utf-8-sig")
-            try:
-                rng = word_doc.Range(0, 0)
-                rng.InsertFile(str(path.resolve()))
-            except Exception:  # noqa: BLE001
-                return False
+        existing = str(getattr(mail_item, "HTMLBody", None) or "")
+        mail_item.HTMLBody = self._merge_body_with_outlook_signature(body_html, existing)
 
-        self._windows_trim_gap_before_signature(word_doc)
-        return True
+        # Cắt gap sau khi merge; đồng thời bỏ mọi attachment tạm vt_body.htm (nếu còn)
+        try:
+            for i in range(int(mail_item.Attachments.Count), 0, -1):
+                att = mail_item.Attachments.Item(i)
+                name = str(getattr(att, "FileName", "") or "")
+                if name.lower() in {"vt_body.htm", "vt_body.html"}:
+                    att.Delete()
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            word_doc = mail_item.GetInspector.WordEditor
+            if word_doc is not None:
+                self._windows_trim_gap_before_signature(word_doc)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _send_windows(
         self,
@@ -919,15 +920,7 @@ end tell
         except Exception:  # noqa: BLE001
             pass
 
-        inserted = False
-        try:
-            inserted = self._windows_insert_body_via_word(mail_item, prepared)
-        except Exception:  # noqa: BLE001
-            inserted = False
-
-        if not inserted:
-            existing = str(getattr(mail_item, "HTMLBody", None) or "")
-            mail_item.HTMLBody = self._merge_body_with_outlook_signature(prepared, existing)
+        self._windows_apply_body_keep_signature(mail_item, prepared)
 
         mail_item.To = to_addr
         if cc_list:
