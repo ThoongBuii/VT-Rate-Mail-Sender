@@ -517,10 +517,13 @@ end tell
         attachment: Optional[Path],
     ) -> None:
         """
-        Legacy Outlook Mac — đúng 1 New Mail (giống gửi tay):
-        New Mail (To/Cc/Subject) → chờ chữ ký hiện trên UI → Cmd+V body → gửi.
-        Không dùng `set content` (trên Mac sẽ ghi đè/xóa chữ ký UI).
+        Legacy Outlook Mac — 1 New Mail chuẩn:
+        To/Cc/Subject (AppleScript) → open (chữ ký UI) → focus BODY → Cmd+V
+        → xác nhận body đã dán → mới send.
+        Không set content (xóa chữ ký). Không dán vào Cc/To.
         """
+        import re
+
         from .outlook_html import prepare_body_html_for_outlook
 
         prepared = prepare_body_html_for_outlook(body_html)
@@ -531,6 +534,18 @@ end tell
 
         def esc(s: str) -> str:
             return (s or "").replace("\\", "\\\\").replace('"', '\\"')
+
+        # Chuỗi xác nhận body đã vào content (không dán nhầm Cc).
+        probe_raw = self._html_visible_text(prepared)
+        probe_raw = re.sub(r"\s+", " ", probe_raw).strip()
+        probe = ""
+        for chunk in (probe_raw, "Dear", "Good day"):
+            c = (chunk or "").strip()
+            if len(c) >= 4:
+                probe = c[:28].replace('"', "").replace("\\", "")
+                break
+        if not probe:
+            probe = "Dear"
 
         to_block = "\n".join(
             f'  make new to recipient at msg with properties {{email address:{{address:"{esc(t)}"}}}}'
@@ -575,79 +590,195 @@ end tell
                 "  end try\n"
             )
 
-        # Clipboard paste — không set content (tránh mất chữ ký UI trên Mac).
         self._mac_set_html_clipboard(prepared)
 
-        # 1 New Mail: To/Cc/Subject → open (chữ ký UI) → dán body → send cùng msg.
-        script = (
-            'tell application "Microsoft Outlook"\n'
-            "  activate\n"
-            "  set msg to make new outgoing message\n"
-            f"{account_block}"
-            f'  set subject of msg to "{esc(subject)}"\n'
-            f"{to_block}\n"
-            f"{cc_block}\n"
-            f"{att_block}\n"
-            "  open msg\n"
-            "  delay 1.6\n"
-            "end tell\n"
-            "\n"
-            'tell application "System Events"\n'
-            "  if not UI elements enabled then\n"
-            '    error "Cần bật Accessibility: System Settings → Privacy & Security → Accessibility → VT Rate Mail Sender / Terminal / osascript"\n'
-            "  end if\n"
-            '  tell process "Microsoft Outlook"\n'
-            "    set frontmost to true\n"
-            "    delay 0.35\n"
-            "    -- Ưu tiên click vùng soạn (giữ caret phía trên chữ ký); fallback Tab → body\n"
-            "    try\n"
-            "      set win to front window\n"
-            "      try\n"
-            "        click (first text area of win)\n"
-            "      on error\n"
-            "        try\n"
-            "          click (first scroll area of win)\n"
-            "        on error\n"
-            "          keystroke tab\n"
-            "          delay 0.12\n"
-            "          keystroke tab\n"
-            "          delay 0.12\n"
-            "        end try\n"
-            "      end try\n"
-            "    end try\n"
-            "    delay 0.2\n"
-            "    -- Đưa caret về đầu body (trên chữ ký), rồi dán HTML\n"
-            "    key code 126 using {command down}\n"
-            "    delay 0.15\n"
-            '    keystroke "v" using {command down}\n'
-            "    delay 1.0\n"
-            "  end tell\n"
-            "end tell\n"
-            "\n"
-            'tell application "Microsoft Outlook"\n'
-            "  set toCount to 0\n"
-            "  try\n"
-            "    set toCount to count of (to recipients of msg)\n"
-            "  end try\n"
-            '  if toCount < 1 then error "To trống — hủy gửi"\n'
-            "  send msg\n"
-            "end tell\n"
-        )
-        result = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
+        # AppleScript phức tạp → ghi file tạm (handler đệ quy tìm body).
+        script = f'''-- VT Rate Mail Sender — Mac Legacy Outlook send
+on collectTextAreas(elem)
+  set bag to {{}}
+  try
+    set bag to bag & (every text area of elem)
+  end try
+  try
+    repeat with g in (every group of elem)
+      set bag to bag & my collectTextAreas(g)
+    end repeat
+  end try
+  try
+    repeat with s in (every scroll area of elem)
+      set bag to bag & my collectTextAreas(s)
+    end repeat
+  end try
+  try
+    repeat with s in (every splitter group of elem)
+      set bag to bag & my collectTextAreas(s)
+    end repeat
+  end try
+  try
+    repeat with s in (every splitter of elem)
+      set bag to bag & my collectTextAreas(s)
+    end repeat
+  end try
+  return bag
+end collectTextAreas
+
+on collectWebAreas(elem)
+  set bag to {{}}
+  try
+    set bag to bag & (every UI element of elem whose role is "AXWebArea")
+  end try
+  try
+    repeat with g in (every group of elem)
+      set bag to bag & my collectWebAreas(g)
+    end repeat
+  end try
+  try
+    repeat with s in (every scroll area of elem)
+      set bag to bag & my collectWebAreas(s)
+    end repeat
+  end try
+  try
+    repeat with s in (every splitter group of elem)
+      set bag to bag & my collectWebAreas(s)
+    end repeat
+  end try
+  return bag
+end collectWebAreas
+
+on focusComposeBody()
+  tell application "System Events"
+    if not UI elements enabled then
+      error "Cần bật Accessibility: System Settings → Privacy & Security → Accessibility → VT Rate Mail Sender / Terminal / osascript"
+    end if
+    tell process "Microsoft Outlook"
+      set frontmost to true
+      delay 0.35
+      set win to front window
+      set focusedBody to false
+
+      -- 1) Ưu tiên AXWebArea (HTML body) — phần CUỐI CÙNG, không lấy first (To/Cc)
+      try
+        set webs to my collectWebAreas(win)
+        if (count of webs) > 0 then
+          click item -1 of webs
+          set focusedBody to true
+        end if
+      end try
+
+      -- 2) Text area cuối cùng (header fields = đầu; body = cuối)
+      if focusedBody is false then
+        try
+          set areas to my collectTextAreas(win)
+          if (count of areas) > 0 then
+            click item -1 of areas
+            set focusedBody to true
+          end if
+        end try
+      end if
+
+      -- 3) Scroll area cuối
+      if focusedBody is false then
+        try
+          set scrolls to every scroll area of win
+          if (count of scrolls) > 0 then
+            click item -1 of scrolls
+            set focusedBody to true
+          end if
+        end try
+      end if
+
+      -- 4) Fallback Tab: To → Cc → Subject → Body (~3 lần từ To)
+      if focusedBody is false then
+        repeat 3 times
+          keystroke tab
+          delay 0.12
+        end repeat
+      end if
+
+      delay 0.25
+      -- Caret về đầu body (trên chữ ký)
+      key code 126 using {{command down}}
+      delay 0.12
+      keystroke "v" using {{command down}}
+      delay 1.2
+    end tell
+  end tell
+end focusComposeBody
+
+tell application "Microsoft Outlook"
+  activate
+  set msg to make new outgoing message
+{account_block}
+  set subject of msg to "{esc(subject)}"
+{to_block}
+{cc_block}
+{att_block}
+  open msg
+  delay 1.7
+end tell
+
+my focusComposeBody()
+
+-- Xác nhận body trên UI (phòng content AppleScript chưa kịp sync)
+set uiBody to ""
+tell application "System Events"
+  tell process "Microsoft Outlook"
+    try
+      set areas to my collectTextAreas(front window)
+      if (count of areas) > 0 then
+        try
+          set uiBody to (value of item -1 of areas) as text
+        end try
+      end if
+    end try
+  end tell
+end tell
+
+tell application "Microsoft Outlook"
+  -- Xác nhận body đã dán TRƯỚC khi send (tránh SENT ảo / Outbox trống)
+  set checkText to ""
+  try
+    set checkText to plain text content of msg
+  end try
+  if checkText is "" then
+    try
+      set checkText to content of msg
+    end try
+  end if
+  set okBody to false
+  if checkText contains "{esc(probe)}" then set okBody to true
+  if uiBody contains "{esc(probe)}" then set okBody to true
+  if okBody is false then
+    error "Body chưa dán đúng (có thể đang dán nhầm Cc). Không gửi — sửa cửa sổ New Mail rồi thử lại 1 mail."
+  end if
+
+  set toCount to 0
+  try
+    set toCount to count of (to recipients of msg)
+  end try
+  if toCount < 1 then error "To trống — hủy gửi"
+
+  send msg
+end tell
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = Path(tmp) / "vt_send_mac.applescript"
+            script_path.write_text(script, encoding="utf-8")
+            result = subprocess.run(
+                ["osascript", str(script_path)],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
         if result.returncode != 0:
             raise RuntimeError(
-                "Outlook Mac gửi thất bại.\n"
+                "Outlook Mac gửi thất bại (đã hủy send nếu body chưa đúng).\n"
                 + (result.stderr or result.stdout or "")
                 + "\nGợi ý:\n"
+                "- Xóa Outbox + đóng Untitled bị dán nhầm Cc\n"
                 "- Legacy Outlook ON\n"
-                "- Xóa Outbox + đóng Untitled\n"
-                "- System Settings → Privacy → Accessibility: cho phép VT Rate Mail Sender\n"
-                "- New Mail tay vẫn có chữ ký"
+                "- Accessibility: cho phép VT Rate Mail Sender\n"
+                "- Thử lại 1 mail"
             )
 
     def _windows_pick_account(self, outlook: Any):
