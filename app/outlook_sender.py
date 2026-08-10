@@ -489,13 +489,14 @@ end tell
         attachment: Optional[Path],
     ) -> None:
         """
-        Legacy Outlook Mac — cùng ý tưởng Windows:
-        mở New Mail (chữ ký mặc định hiện ra) → chèn nội dung app phía trên → gửi.
-        To / Cc nhận nhiều địa chỉ (phân tách bằng ; hoặc ,).
+        Legacy Outlook Mac — MỘT thao tác duy nhất (không tạo mail thứ 2):
+        New Mail → gắn chữ ký (account/default) → chèn body phía trên → gửi.
         """
         from .outlook_html import prepare_body_html_for_outlook
 
         prepared = prepare_body_html_for_outlook(body_html)
+        if not (prepared or "").strip():
+            raise ValueError("Nội dung mail trống — không gửi.")
 
         def esc(s: str) -> str:
             return (s or "").replace("\\", "\\\\").replace('"', '\\"')
@@ -523,14 +524,20 @@ end tell
   try
     repeat with acc in (get exchange accounts)
       try
-        if (email address of acc as string) contains "{fe}" then set account of msg to acc
+        if (email address of acc as string) contains "{fe}" then
+          set account of msg to acc
+          exit repeat
+        end if
       end try
     end repeat
   end try
   try
     repeat with acc in (get imap accounts)
       try
-        if (email address of acc as string) contains "{fe}" then set account of msg to acc
+        if (email address of acc as string) contains "{fe}" then
+          set account of msg to acc
+          exit repeat
+        end if
       end try
     end repeat
   end try
@@ -538,158 +545,88 @@ end tell
 
         with tempfile.TemporaryDirectory() as tmp:
             body_path = Path(tmp) / "body.html"
-            sig_path = Path(tmp) / "sig.html"
-            full_path = Path(tmp) / "full.html"
             body_path.write_text(prepared, encoding="utf-8")
 
-            # Phase 1: New Mail + open → lưu content (chữ ký) ra file
-            dump = f'''
-set sigPath to "{sig_path}"
+            # Một script duy nhất — tránh trùng New Mail / Outbox rỗng
+            script = f'''
+set bodyPath to "{body_path}"
+set bodyText to do shell script "cat " & quoted form of bodyPath
+if bodyText is "" then error "Body HTML trống"
+
 tell application "Microsoft Outlook"
   activate
   set msg to make new outgoing message
   {account_block}
+
+  -- Gắn chữ ký mặc định của account (nếu có trong Outlook)
+  try
+    set accObj to account of msg
+    set sigs to signatures of accObj
+    if (count of sigs) > 0 then
+      set signature of msg to item 1 of sigs
+    end if
+  end try
+  try
+    set allSigs to signatures
+    if (count of allSigs) > 0 then
+      set signature of msg to item 1 of allSigs
+    end if
+  end try
+
   open msg
-  delay 1.4
+  delay 1.6
+
+  set subject of msg to "{esc(subject)}"
+
+  -- Lấy phần chữ ký đã hiện trong New Mail, rồi chèn body phía trên
   set sigText to ""
   try
     set sigText to content of msg
   end try
-  set mid to ""
-  try
-    set mid to (id of msg) as string
-  end try
-end tell
-try
-  set fRef to open for access (POSIX file sigPath) with write permission
-  set eof of fRef to 0
-  write sigText to fRef as «class utf8»
-  close access fRef
-on error errMsg
-  try
-    close access (POSIX file sigPath)
-  end try
-  -- fallback text write
-  try
-    do shell script "printf '%s' " & quoted form of sigText & " > " & quoted form of sigPath
-  end try
-end try
-return mid
-'''
-            r1 = subprocess.run(
-                ["osascript", "-e", dump],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            if r1.returncode != 0:
-                raise RuntimeError(
-                    "Outlook Mac không tạo được New Mail/chữ ký.\n"
-                    + (r1.stderr or r1.stdout or "")
-                    + "\nCần Legacy Outlook (tắt New Outlook), đã login."
-                )
 
-            msg_id = (r1.stdout or "").strip()
-            sig_html = ""
-            if sig_path.is_file():
-                sig_html = sig_path.read_text(encoding="utf-8", errors="ignore")
-
-            full_html = self._merge_body_with_outlook_signature(prepared, sig_html)
-            # Nếu Outlook Mac trả content không phải HTML document, vẫn còn body
-            if not full_html.strip():
-                full_html = prepared
-            full_path.write_text(full_html, encoding="utf-8")
-
-            # Phase 2: gán HTML đã merge + nhiều To/Cc + gửi
-            id_line = (
-                f"set msg to message id {msg_id}"
-                if msg_id.isdigit()
-                else "set msg to make new outgoing message"
-            )
-            # Một số bản Outlook dùng id không thuần số — fallback tìm draft mới nhất
-            if msg_id and not msg_id.isdigit():
-                id_line = f'''
-  set msg to missing value
   try
-    set msg to message id {msg_id}
-  end try
-  if msg is missing value then
-    set msg to make new outgoing message
-  end if
-'''
-
-            send = f'''
-set fullPath to "{full_path}"
-set fullText to do shell script "cat " & quoted form of fullPath
-tell application "Microsoft Outlook"
-  activate
-  {id_line}
-  {account_block if "make new outgoing" in id_line else ""}
-  try
-    open msg
-  end try
-  delay 0.3
-  set subject of msg to "{esc(subject)}"
-  try
-    set content of msg to fullText
+    set content of msg to bodyText & sigText
   on error
     try
-      set plain text content of msg to fullText
+      set content of msg to bodyText
+    on error
+      set plain text content of msg to bodyText
     end try
   end try
+
+  -- Kiểm tra body không trống trước khi gửi
+  set checkContent to ""
+  try
+    set checkContent to content of msg
+  end try
+  if checkContent is "" then
+    try
+      set checkContent to plain text content of msg
+    end try
+  end if
+  if checkContent is "" then error "Outlook Mac: content vẫn trống sau khi dán body — hủy gửi."
+
 {to_block}
 {cc_block}
 {att_block}
+
   send msg
 end tell
 '''
-            r2 = subprocess.run(
-                ["osascript", "-e", send],
+            result = subprocess.run(
+                ["osascript", "-e", script],
                 capture_output=True,
                 text=True,
                 timeout=180,
             )
-            if r2.returncode != 0:
-                # Fallback: tạo mail mới trong 1 bước (vẫn open để lấy chữ ký rồi prepend đơn giản)
-                fallback = f'''
-set bodyPath to "{body_path}"
-set bodyText to do shell script "cat " & quoted form of bodyPath
-tell application "Microsoft Outlook"
-  activate
-  set msg to make new outgoing message
-  {account_block}
-  open msg
-  delay 1.4
-  set subject of msg to "{esc(subject)}"
-  set sigText to ""
-  try
-    set sigText to content of msg
-  end try
-  try
-    set content of msg to bodyText & sigText
-  on error
-    set content of msg to bodyText
-  end try
-{to_block}
-{cc_block}
-{att_block}
-  send msg
-end tell
-'''
-                r3 = subprocess.run(
-                    ["osascript", "-e", fallback],
-                    capture_output=True,
-                    text=True,
-                    timeout=180,
+            if result.returncode != 0:
+                raise RuntimeError(
+                    "Outlook Mac gửi thất bại.\n"
+                    + (result.stderr or result.stdout or "")
+                    + "\nCần Legacy Outlook (tắt New Outlook), đã login, "
+                    "và đã cấu hình chữ ký cho account gửi.\n"
+                    "Xóa các mail trống trong Outbox rồi thử lại 1 mail."
                 )
-                if r3.returncode != 0:
-                    raise RuntimeError(
-                        "Outlook Mac gửi thất bại.\n"
-                        + (r2.stderr or r2.stdout or "")
-                        + "\n"
-                        + (r3.stderr or r3.stdout or "")
-                        + "\nCần Legacy Outlook, đã login, bật chữ ký mặc định New Mail."
-                    )
 
     def _windows_pick_account(self, outlook: Any):
         if not self.config.from_email:
