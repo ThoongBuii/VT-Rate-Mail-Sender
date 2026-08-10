@@ -45,7 +45,7 @@ class OutlookDesktopSender:
             label = self._mac.open_outlook()
             self._ready = True
             self._account_label = label
-            return f"Outlook đã mở · {label} · Legacy ON · gửi tối giản (body + chữ ký Outlook)"
+            return f"Outlook đã mở · {label} · Legacy ON · New Mail + dán body (giữ ảnh chữ ký)"
         if system == "Windows":
             try:
                 import win32com.client  # type: ignore
