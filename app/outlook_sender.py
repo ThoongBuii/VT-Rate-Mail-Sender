@@ -592,175 +592,63 @@ end tell
 
         self._mac_set_html_clipboard(prepared)
 
-        # AppleScript phức tạp → ghi file tạm (handler đệ quy tìm body).
-        script = f'''-- VT Rate Mail Sender — Mac Legacy Outlook send
-on collectTextAreas(elem)
-  set bag to {{}}
-  try
-    set bag to bag & (every text area of elem)
-  end try
-  try
-    repeat with g in (every group of elem)
-      set bag to bag & my collectTextAreas(g)
-    end repeat
-  end try
-  try
-    repeat with s in (every scroll area of elem)
-      set bag to bag & my collectTextAreas(s)
-    end repeat
-  end try
-  try
-    repeat with s in (every splitter group of elem)
-      set bag to bag & my collectTextAreas(s)
-    end repeat
-  end try
-  try
-    repeat with s in (every splitter of elem)
-      set bag to bag & my collectTextAreas(s)
-    end repeat
-  end try
-  return bag
-end collectTextAreas
-
-on collectWebAreas(elem)
-  set bag to {{}}
-  try
-    set bag to bag & (every UI element of elem whose role is "AXWebArea")
-  end try
-  try
-    repeat with g in (every group of elem)
-      set bag to bag & my collectWebAreas(g)
-    end repeat
-  end try
-  try
-    repeat with s in (every scroll area of elem)
-      set bag to bag & my collectWebAreas(s)
-    end repeat
-  end try
-  try
-    repeat with s in (every splitter group of elem)
-      set bag to bag & my collectWebAreas(s)
-    end repeat
-  end try
-  return bag
-end collectWebAreas
-
-on focusComposeBody()
-  tell application "System Events"
-    if not UI elements enabled then
-      error "Cần bật Accessibility: System Settings → Privacy & Security → Accessibility → VT Rate Mail Sender / Terminal / osascript"
-    end if
-    tell process "Microsoft Outlook"
-      set frontmost to true
-      delay 0.35
-      set win to front window
-      set focusedBody to false
-
-      -- 1) Ưu tiên AXWebArea (HTML body) — phần CUỐI CÙNG, không lấy first (To/Cc)
-      try
-        set webs to my collectWebAreas(win)
-        if (count of webs) > 0 then
-          click item -1 of webs
-          set focusedBody to true
-        end if
-      end try
-
-      -- 2) Text area cuối cùng (header fields = đầu; body = cuối)
-      if focusedBody is false then
-        try
-          set areas to my collectTextAreas(win)
-          if (count of areas) > 0 then
-            click item -1 of areas
-            set focusedBody to true
-          end if
-        end try
-      end if
-
-      -- 3) Scroll area cuối
-      if focusedBody is false then
-        try
-          set scrolls to every scroll area of win
-          if (count of scrolls) > 0 then
-            click item -1 of scrolls
-            set focusedBody to true
-          end if
-        end try
-      end if
-
-      -- 4) Fallback Tab: To → Cc → Subject → Body (~3 lần từ To)
-      if focusedBody is false then
-        repeat 3 times
-          keystroke tab
-          delay 0.12
-        end repeat
-      end if
-
-      delay 0.25
-      -- Caret về đầu body (trên chữ ký)
-      key code 126 using {{command down}}
-      delay 0.12
-      keystroke "v" using {{command down}}
-      delay 1.2
-    end tell
-  end tell
-end focusComposeBody
-
-tell application "Microsoft Outlook"
-  activate
-  set msg to make new outgoing message
-{account_block}
-  set subject of msg to "{esc(subject)}"
-{to_block}
-{cc_block}
-{att_block}
-  open msg
-  delay 1.7
-end tell
-
-my focusComposeBody()
-
--- Xác nhận body trên UI (phòng content AppleScript chưa kịp sync)
-set uiBody to ""
-tell application "System Events"
-  tell process "Microsoft Outlook"
-    try
-      set areas to my collectTextAreas(front window)
-      if (count of areas) > 0 then
-        try
-          set uiBody to (value of item -1 of areas) as text
-        end try
-      end if
-    end try
-  end tell
-end tell
-
-tell application "Microsoft Outlook"
-  -- Xác nhận body đã dán TRƯỚC khi send (tránh SENT ảo / Outbox trống)
-  set checkText to ""
-  try
-    set checkText to plain text content of msg
-  end try
-  if checkText is "" then
-    try
-      set checkText to content of msg
-    end try
-  end if
-  set okBody to false
-  if checkText contains "{esc(probe)}" then set okBody to true
-  if uiBody contains "{esc(probe)}" then set okBody to true
-  if okBody is false then
-    error "Body chưa dán đúng (có thể đang dán nhầm Cc). Không gửi — sửa cửa sổ New Mail rồi thử lại 1 mail."
-  end if
-
-  set toCount to 0
-  try
-    set toCount to count of (to recipients of msg)
-  end try
-  if toCount < 1 then error "To trống — hủy gửi"
-
-  send msg
-end tell
-'''
+        # AppleScript ghi file tạm — click tọa độ vùng body (tránh dán vào Cc).
+        script = (
+            'tell application "Microsoft Outlook"\n'
+            "  activate\n"
+            "  set msg to make new outgoing message\n"
+            f"{account_block}"
+            f'  set subject of msg to "{esc(subject)}"\n'
+            f"{to_block}\n"
+            f"{cc_block}\n"
+            f"{att_block}\n"
+            "  open msg\n"
+            "  delay 1.8\n"
+            "end tell\n"
+            "\n"
+            'tell application "System Events"\n'
+            "  if not UI elements enabled then\n"
+            '    error "Can bat Accessibility cho VT Rate Mail Sender"\n'
+            "  end if\n"
+            '  tell process "Microsoft Outlook"\n'
+            "    set frontmost to true\n"
+            "    delay 0.4\n"
+            "    set win to front window\n"
+            "    set {wx, wy} to position of win\n"
+            "    set {ww, wh} to size of win\n"
+            "    -- Click giua vung body (duoi To/Cc/Subject)\n"
+            "    set clickX to wx + (ww / 2)\n"
+            "    set clickY to wy + (wh * 0.68)\n"
+            "    click at {clickX, clickY}\n"
+            "    delay 0.35\n"
+            "    key code 126 using {command down}\n"
+            "    delay 0.15\n"
+            '    keystroke "v" using {command down}\n'
+            "    delay 1.3\n"
+            "  end tell\n"
+            "end tell\n"
+            "\n"
+            'tell application "Microsoft Outlook"\n'
+            '  set checkText to ""\n'
+            "  try\n"
+            "    set checkText to plain text content of msg\n"
+            "  end try\n"
+            '  if checkText is "" then\n'
+            "    try\n"
+            "      set checkText to content of msg\n"
+            "    end try\n"
+            "  end if\n"
+            f'  if checkText does not contain "{esc(probe)}" then\n'
+            '    error "Body chua dan dung — huy send. Kiem tra New Mail (Cc khong duoc co Dear)."\n'
+            "  end if\n"
+            "  set toCount to 0\n"
+            "  try\n"
+            "    set toCount to count of (to recipients of msg)\n"
+            "  end try\n"
+            '  if toCount < 1 then error "To trong — huy gui"\n'
+            "  send msg\n"
+            "end tell\n"
+        )
         with tempfile.TemporaryDirectory() as tmp:
             script_path = Path(tmp) / "vt_send_mac.applescript"
             script_path.write_text(script, encoding="utf-8")
