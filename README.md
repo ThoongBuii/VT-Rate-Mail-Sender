@@ -34,6 +34,8 @@ xattr -cr "/Applications/VT Rate Mail Sender.app"
 ### Excel danh bạ (4 cột)
 `Agency Company` · `Account Name` · `Account Mail` · `Mail cc`
 
+`Account Mail` (To) và `Mail cc` có thể nhiều địa chỉ, phân tách bằng `;` hoặc `,` — giống gửi tay.
+
 Mẫu: `samples/VT_Rate_TEST.xlsx`
 
 ---
