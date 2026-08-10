@@ -5,7 +5,8 @@
 > Bên trong app dùng engine cục bộ `127.0.0.1` — **không phải** website public. Không cần mở Chrome/Edge thủ công.
 
 **Soạn trong app:** Subject, attachment, nội dung (Dear / bảng giá / remark).  
-**Chữ ký:** không cần paste — khi gửi, Outlook New Mail tự gắn chữ ký mặc định của account (giống gửi tay).
+**Chữ ký Windows:** Outlook New Mail tự gắn khi gửi.  
+**Chữ ký macOS:** bấm **Chụp chữ ký Outlook** một lần → app lưu và gắn vào mỗi mail khi gửi (không dùng Tab/Cmd+V).
 
 ## Dành cho nhân viên văn phòng
 
@@ -18,7 +19,8 @@
 xattr -cr "/Applications/VT Rate Mail Sender.app"
 ```
 
-4. Mở app → Outlook đã login → Allow **Automation** nếu được hỏi
+4. Mở app → Outlook đã login (Legacy Outlook ON) → Allow **Automation** / **Accessibility** nếu được hỏi
+5. Bấm **Chụp chữ ký Outlook** một lần (New Mail trống hiện chữ ký → app lưu) → rồi Semi-Auto
 
 ### Windows
 1. Tải `VTRateMailSender.exe` (hoặc ZIP) từ [Releases](https://github.com/ThoongBuii/VT-Rate-Mail-Sender/releases)

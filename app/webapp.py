@@ -161,12 +161,18 @@ class AppState:
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def snapshot(self) -> dict[str, Any]:
+        import platform
+
         ready = sum(1 for m in self.mails if m.status == MailStatus.READY)
         sent = sum(1 for m in self.mails if m.status == MailStatus.SENT)
         failed = sum(1 for m in self.mails if m.status == MailStatus.FAILED)
+        mac_sig = self.sender.mac_signature_status()
         return {
             "outlook_ready": self.sender.is_ready,
             "outlook_account": self.sender.account_email,
+            "platform": platform.system(),
+            "mac_signature_ready": bool(mac_sig.get("ready")),
+            "mac_signature_message": mac_sig.get("message") or "",
             "subject": self.subject,
             "attachment": self.attachment,
             "template_html": self.template_html,
@@ -259,6 +265,22 @@ def api_outlook_open():
         return jsonify({"ok": True, "message": msg, "account": STATE.sender.account_email})
     except Exception as exc:  # noqa: BLE001
         return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@flask_app.post("/api/outlook/capture-signature")
+def api_outlook_capture_signature():
+    """macOS: chụp chữ ký New Mail 1 lần → lưu để merge khi gửi."""
+    try:
+        msg = STATE.sender.capture_mac_signature()
+        st = STATE.sender.mac_signature_status()
+        return jsonify({"ok": True, "message": msg, "signature": st})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@flask_app.get("/api/outlook/signature-status")
+def api_outlook_signature_status():
+    return jsonify({"ok": True, **STATE.sender.mac_signature_status()})
 
 
 @flask_app.post("/api/clipboard/paste")

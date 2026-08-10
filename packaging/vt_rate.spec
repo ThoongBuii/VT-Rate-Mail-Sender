@@ -15,7 +15,6 @@ datas = [
     (str(root / "app" / "web"), "app/web"),
     (str(root / "config.example.json"), "."),
     (str(root / "samples"), "samples"),
-    (str(root / "templates"), "templates"),
 ]
 binaries = []
 hiddenimports = [
@@ -25,6 +24,10 @@ hiddenimports = [
     "app.webapp",
     "app.importer",
     "app.outlook_sender",
+    "app.send",
+    "app.send.mac",
+    "app.send.windows",
+    "app.send.html_merge",
     "app.queue_worker",
     "app.template_engine",
     "app.models",
