@@ -17,7 +17,7 @@ class OutlookDesktopSender:
     """
     Facade: App soạn Dear/bảng/remark.
     - Windows: COM + merge chữ ký New Mail.
-    - macOS: chữ ký đã chụp 1 lần + set content (không Tab/Cmd+V).
+    - macOS: chữ ký chuẩn cache 1 lần (như Windows merge) → set content mỗi lần gửi.
     """
 
     def __init__(self, config: AppConfig):
@@ -45,7 +45,7 @@ class OutlookDesktopSender:
             label = self._mac.open_outlook()
             self._ready = True
             self._account_label = label
-            return f"Outlook đã mở · {label} · Legacy ON · New Mail + dán body (giữ ảnh chữ ký)"
+            return f"Outlook đã mở · {label} · Legacy ON · lấy chữ ký chuẩn 1 lần rồi gửi"
         if system == "Windows":
             try:
                 import win32com.client  # type: ignore
@@ -112,7 +112,7 @@ class OutlookDesktopSender:
         if platform.system() == "Darwin":
             st = self._mac.signature_status()
             note = st["message"]
-            mac_ready = True
+            mac_ready = bool(st.get("ready"))
 
         return {
             "to": mail.account_mail,
@@ -131,10 +131,15 @@ class OutlookDesktopSender:
 
     def capture_mac_signature(self) -> str:
         if platform.system() != "Darwin":
-            raise RuntimeError("Chụp chữ ký chỉ dành cho macOS.")
-        msg = self._mac.capture_signature()
+            raise RuntimeError("Lấy chữ ký chuẩn chỉ dành cho macOS.")
+        msg = self._mac.capture_signature_from_new_mail()
         self._ready = True
         return msg
+
+    def mac_signature_html(self) -> str:
+        if platform.system() != "Darwin":
+            return ""
+        return self._mac.load_signature_html()
 
     def mac_signature_status(self) -> dict[str, Any]:
         if platform.system() != "Darwin":

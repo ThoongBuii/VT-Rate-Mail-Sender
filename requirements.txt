@@ -2,7 +2,8 @@ flask>=3.0.0
 pywebview>=5.0.0
 openpyxl>=3.1.5
 Pillow>=10.4.0
-# macOS only (clipboard HTML paste vào Legacy Outlook):
+# macOS: clipboard HTML + CGEvent paste Body (không qua osascript System Events)
 pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
 # Windows only (khi chạy source / build Windows):
 # pywin32>=306

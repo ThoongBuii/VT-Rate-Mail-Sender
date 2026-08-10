@@ -56,6 +56,7 @@ elif sys.platform == "darwin":
         "AppKit",
         "Foundation",
         "objc",
+        "Quartz",
     ]
 
 a = Analysis(

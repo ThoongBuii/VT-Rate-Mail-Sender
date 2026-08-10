@@ -171,7 +171,7 @@ class AppState:
             "outlook_ready": self.sender.is_ready,
             "outlook_account": self.sender.account_email,
             "platform": platform.system(),
-            "mac_signature_ready": True,
+            "mac_signature_ready": bool(mac_sig.get("ready")),
             "mac_signature_message": mac_sig.get("message") or "",
             "subject": self.subject,
             "attachment": self.attachment,
@@ -269,7 +269,7 @@ def api_outlook_open():
 
 @flask_app.post("/api/outlook/capture-signature")
 def api_outlook_capture_signature():
-    """macOS: chụp chữ ký New Mail 1 lần → lưu để merge khi gửi."""
+    """macOS: nhận chữ ký từ Clipboard (HTML + ảnh) → lưu để set content khi gửi."""
     try:
         msg = STATE.sender.capture_mac_signature()
         st = STATE.sender.mac_signature_status()
@@ -286,7 +286,7 @@ def api_outlook_signature_status():
 @flask_app.post("/api/clipboard/paste")
 def api_clipboard_paste():
     """
-    Đọc CF_HTML Windows + nhúng ảnh.
+    Đọc clipboard (Windows CF_HTML / macOS WebArchive) + nhúng ảnh base64.
     replace=true: ghi đè toàn bộ template.
     replace=false (mặc định): chỉ trả HTML đã làm sạch để chèn tại con trỏ.
     """
@@ -301,9 +301,17 @@ def api_clipboard_paste():
             return jsonify(
                 {
                     "ok": False,
-                    "error": "Clipboard trống. Trong Outlook: chọn nội dung → Ctrl+C, rồi Ctrl+V trong khung soạn.",
+                    "error": (
+                        "Clipboard trống / không đọc được HTML.\n"
+                        "Outlook: chọn chữ ký + logo → Cmd+C (Mac) / Ctrl+C (Win) → dán vào Soạn."
+                    ),
                 }
             ), 400
+        # Cảnh báo nếu vẫn còn cid chưa nhúng
+        import re as _re
+
+        leftover_cid = bool(_re.search(r"""(?i)src\s*=\s*['"]cid:""", html))
+        n_img = len(_re.findall(r"data:image/", html, flags=_re.I))
         if replace:
             STATE.template_html = html
             STATE.apply_compose_to_mails()
@@ -314,6 +322,13 @@ def api_clipboard_paste():
                 "html": html,
                 "template_html": html,
                 "replaced": replace,
+                "images_embedded": n_img,
+                "has_broken_cid": leftover_cid,
+                "warning": (
+                    "Còn ảnh cid chưa nhúng — copy lại từ New Mail (chọn cả logo)."
+                    if leftover_cid
+                    else ""
+                ),
                 "state": STATE.snapshot() if replace else None,
             }
         )

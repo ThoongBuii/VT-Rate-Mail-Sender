@@ -20,6 +20,7 @@
     </div>
     <div class="topbar-right">
       <span id="outlookStatus" class="status">Outlook: chưa kết nối</span>
+      <button id="btnCaptureSig" class="btn ghost" type="button" hidden>Lấy chữ ký chuẩn (1 lần)</button>
       <button id="btnOutlook" class="btn primary" type="button">Mở Outlook</button>
     </div>
   </header>
@@ -125,9 +126,11 @@
         class="compose-editor"
         contenteditable="true"
         spellcheck="false"
-        data-placeholder="Chỉ soạn nội dung (Dear, bảng giá, remark…). Không dán chữ ký — Outlook tự gắn chữ ký mặc định khi gửi."
+        data-placeholder="Chỉ soạn Dear, bảng giá, remark… Không dán chữ ký. macOS: lấy chữ ký chuẩn 1 lần bằng nút trên thanh."
       ></div>
-      <p class="compose-hint muted">Chữ ký trong app không cần; khi Semi-Auto, mail Outlook sẽ có chữ ký giống New Mail tay.</p>
+      <p class="compose-hint muted" id="composeHint">
+        macOS ≈ Windows: «Lấy chữ ký chuẩn (1 lần)» từ New Mail → Semi-Auto gửi bằng set content (không dán UI). Legacy Outlook phải ON. Windows: chữ ký New Mail tự gắn.
+      </p>
       <div class="send-row">
         <button id="btnToPreview" class="btn primary" type="button">Sang Preview →</button>
         <button id="btnSuggest" class="btn ghost" type="button">Nạp gợi ý</button>
