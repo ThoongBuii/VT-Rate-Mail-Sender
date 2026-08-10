@@ -592,7 +592,8 @@ end tell
 
         self._mac_set_html_clipboard(prepared)
 
-        # AppleScript ghi file tạm — click tọa độ vùng body (tránh dán vào Cc).
+        # Từ ô To (mặc định sau open) → Tab×3 tới body → Cmd+V.
+        # Không dùng click tọa độ (dễ trượt, focus kẹt ở To như ảnh user).
         script = (
             'tell application "Microsoft Outlook"\n'
             "  activate\n"
@@ -612,19 +613,19 @@ end tell
             "  end if\n"
             '  tell process "Microsoft Outlook"\n'
             "    set frontmost to true\n"
-            "    delay 0.4\n"
-            "    set win to front window\n"
-            "    set {wx, wy} to position of win\n"
-            "    set {ww, wh} to size of win\n"
-            "    -- Click giua vung body (duoi To/Cc/Subject)\n"
-            "    set clickX to wx + (ww / 2)\n"
-            "    set clickY to wy + (wh * 0.68)\n"
-            "    click at {clickX, clickY}\n"
-            "    delay 0.35\n"
+            "    delay 0.45\n"
+            "    -- Sau open, focus o To (anh user). Tab: To -> Cc -> Subject -> Body\n"
+            "    keystroke tab\n"
+            "    delay 0.15\n"
+            "    keystroke tab\n"
+            "    delay 0.15\n"
+            "    keystroke tab\n"
+            "    delay 0.3\n"
+            "    -- Ve dau body (tren chu ky Outlook)\n"
             "    key code 126 using {command down}\n"
             "    delay 0.15\n"
             '    keystroke "v" using {command down}\n'
-            "    delay 1.3\n"
+            "    delay 1.4\n"
             "  end tell\n"
             "end tell\n"
             "\n"
@@ -639,7 +640,7 @@ end tell
             "    end try\n"
             "  end if\n"
             f'  if checkText does not contain "{esc(probe)}" then\n'
-            '    error "Body chua dan dung — huy send. Kiem tra New Mail (Cc khong duoc co Dear)."\n'
+            '    error "Body chua dan dung — huy send. Dong Untitled, thu lai 1 mail."\n'
             "  end if\n"
             "  set toCount to 0\n"
             "  try\n"
