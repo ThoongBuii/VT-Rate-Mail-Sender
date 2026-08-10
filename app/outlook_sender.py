@@ -617,7 +617,8 @@ end tell
         leaf_empty = (
             r"<(?:p|div)(?:\s[^>]*)?>\s*(?:"
             r"<br\s*/?>|&nbsp;|\xa0|&#160;|\s|"
-            r"<span[^>]*>\s*(?:&nbsp;|\xa0|&#160;|<br\s*/?>|\s)*</span>|"
+            r"<span[^>]*>\s*(?:&nbsp;|\xa0|&#160;|<br\s*/?>|\s|"
+            r"<o:p[^>]*>\s*(?:&nbsp;|\xa0|&#160;)?\s*</o:p>)*</span>|"
             r"<o:p[^>]*>\s*(?:&nbsp;|\xa0|&#160;)?\s*</o:p>"
             r")*\s*</(?:p|div)>"
         )
@@ -777,6 +778,110 @@ end tell
         rest = OutlookDesktopSender._zero_first_block_margin(rest)
         return body + rest
 
+    def _windows_delete_leading_empty_paragraphs(self, word_doc: Any, limit: int = 30) -> int:
+        """Xóa đoạn trống đầu New Mail (thường ~2 dòng trước chữ ký)."""
+        removed = 0
+        for _ in range(limit):
+            try:
+                if int(word_doc.Paragraphs.Count) < 1:
+                    break
+                para = word_doc.Paragraphs(1)
+                raw = str(para.Range.Text or "")
+                clean = (
+                    raw.replace("\r", "")
+                    .replace("\x07", "")
+                    .replace("\xa0", " ")
+                    .replace("\u200b", "")
+                    .strip()
+                )
+                if clean:
+                    break
+                para.Range.Delete()
+                removed += 1
+            except Exception:  # noqa: BLE001
+                break
+        return removed
+
+    def _windows_trim_gap_before_signature(self, word_doc: Any) -> int:
+        """Xóa đoạn trống ngay trước 'Best Regards' / chữ ký (gap ~2 dòng)."""
+        import re
+
+        removed = 0
+        try:
+            count = int(word_doc.Paragraphs.Count)
+        except Exception:  # noqa: BLE001
+            return 0
+
+        sig_idx = None
+        for i in range(1, count + 1):
+            try:
+                raw = str(word_doc.Paragraphs(i).Range.Text or "")
+            except Exception:  # noqa: BLE001
+                continue
+            if re.search(r"best\s*regards", raw, flags=re.I):
+                sig_idx = i
+                break
+
+        if not sig_idx or sig_idx <= 1:
+            return 0
+
+        while sig_idx > 1 and removed < 20:
+            try:
+                prev = word_doc.Paragraphs(sig_idx - 1)
+                raw = str(prev.Range.Text or "")
+                clean = (
+                    raw.replace("\r", "")
+                    .replace("\x07", "")
+                    .replace("\xa0", " ")
+                    .replace("\u200b", "")
+                    .strip()
+                )
+                if clean:
+                    break
+                prev.Range.Delete()
+                removed += 1
+                sig_idx -= 1
+            except Exception:  # noqa: BLE001
+                break
+        return removed
+
+    def _windows_insert_body_via_word(self, mail_item: Any, body_html: str) -> bool:
+        """
+        Chèn body vào đầu message bằng WordEditor (giống gõ/dán phía trên chữ ký).
+        Giữ ảnh cid chữ ký; cắt dòng trống đầu New Mail.
+        """
+        from .outlook_html import DEFAULT_FONT_STACK, DEFAULT_SIZE_PT
+
+        try:
+            insp = mail_item.GetInspector
+            word_doc = insp.WordEditor
+            if word_doc is None:
+                return False
+        except Exception:  # noqa: BLE001
+            return False
+
+        self._windows_delete_leading_empty_paragraphs(word_doc)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vt_body.htm"
+            doc_html = (
+                "<html><head><meta http-equiv=\"Content-Type\" "
+                'content="text/html; charset=utf-8">'
+                f"<style>body{{font-family:{DEFAULT_FONT_STACK};font-size:{DEFAULT_SIZE_PT};"
+                "color:#222;margin:0;padding:0;}"
+                "p{margin:0 0 0.6em;} table{border-collapse:collapse;}</style>"
+                f"</head><body>{body_html}</body></html>"
+            )
+            path.write_text(doc_html, encoding="utf-8-sig")
+            try:
+                rng = word_doc.Range(0, 0)
+                rng.InsertFile(str(path.resolve()))
+            except Exception:  # noqa: BLE001
+                return False
+
+        self._windows_trim_gap_before_signature(word_doc)
+        return True
+
     def _send_windows(
         self,
         to_addr: str,
@@ -787,10 +892,12 @@ end tell
     ) -> None:
         import win32com.client  # type: ignore
 
+        from .outlook_html import prepare_body_html_for_outlook
+
         outlook = win32com.client.Dispatch("Outlook.Application")
         account = self._windows_pick_account(outlook)
+        prepared = prepare_body_html_for_outlook(body_html)
 
-        # Một MailItem: Outlook gắn chữ ký → chèn body → gửi (giữ ảnh cid chữ ký)
         mail_item = outlook.CreateItem(0)
         if account is not None:
             try:
@@ -808,12 +915,19 @@ end tell
             pass
         try:
             mail_item.Display(False)
-            time.sleep(0.35)
+            time.sleep(0.45)
         except Exception:  # noqa: BLE001
             pass
 
-        existing = str(getattr(mail_item, "HTMLBody", None) or "")
-        mail_item.HTMLBody = self._merge_body_with_outlook_signature(body_html, existing)
+        inserted = False
+        try:
+            inserted = self._windows_insert_body_via_word(mail_item, prepared)
+        except Exception:  # noqa: BLE001
+            inserted = False
+
+        if not inserted:
+            existing = str(getattr(mail_item, "HTMLBody", None) or "")
+            mail_item.HTMLBody = self._merge_body_with_outlook_signature(prepared, existing)
 
         mail_item.To = to_addr
         if cc_list:

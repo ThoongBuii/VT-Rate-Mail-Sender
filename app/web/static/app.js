@@ -42,23 +42,69 @@ function getComposeHtml() {
   return normalizeHtmlForOutlook(html);
 }
 
-/** Bọc / chuẩn hóa font inline để Outlook New Mail không fallback font hệ thống. */
+/** Bọc / chuẩn hóa font+bảng inline để Outlook New Mail khớp editor. */
 function normalizeHtmlForOutlook(html) {
   const trimmed = (html || "").trim();
   if (!trimmed) return "";
-  // Đã có wrapper font Aptos/Calibri → giữ nguyên
-  if (/font-family\s*:\s*[^;]*Aptos/i.test(trimmed) || /font-family\s*:\s*[^;]*Calibri/i.test(trimmed)) {
-    // Đổi px phổ biến của trình duyệt sang pt gần đúng cho Outlook (12px≈9pt… 16px≈12pt)
-    return trimmed.replace(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi, (_, px) => {
+
+  const box = document.createElement("div");
+  box.innerHTML = trimmed;
+
+  box.querySelectorAll("table").forEach((t) => {
+    t.style.borderCollapse = t.style.borderCollapse || "collapse";
+    t.style.borderSpacing = t.style.borderSpacing || "0";
+    if (!t.getAttribute("border")) t.setAttribute("border", "1");
+    if (!t.getAttribute("cellspacing")) t.setAttribute("cellspacing", "0");
+    if (!t.getAttribute("cellpadding")) t.setAttribute("cellpadding", "4");
+  });
+
+  box.querySelectorAll("td, th").forEach((cell) => {
+    if (!cell.style.fontFamily) cell.style.fontFamily = OUTLOOK_FONT_STACK;
+    if (!cell.style.fontSize) cell.style.fontSize = "10pt";
+    if (!cell.style.verticalAlign) cell.style.verticalAlign = "middle";
+  });
+
+  box.querySelectorAll("p, div, li").forEach((el) => {
+    if (el.closest("table")) return;
+    if (el.getAttribute("data-vt-body") === "1") return;
+    if (!el.style.fontFamily) el.style.fontFamily = OUTLOOK_FONT_STACK;
+    if (!el.style.fontSize) el.style.fontSize = `${DEFAULT_SIZE_PT}pt`;
+  });
+
+  // px → pt trên style inline
+  box.querySelectorAll("[style]").forEach((el) => {
+    const s = el.getAttribute("style") || "";
+    const next = s.replace(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi, (_, px) => {
       const pt = Math.round((Number(px) * 72) / 96 * 10) / 10;
       return `font-size:${pt}pt`;
     });
+    if (next !== s) el.setAttribute("style", next);
+  });
+
+  let root = box.firstElementChild;
+  if (
+    root &&
+    root.tagName === "DIV" &&
+    (root.getAttribute("data-vt-body") === "1" ||
+      /Aptos/i.test(root.style.fontFamily || ""))
+  ) {
+    root.setAttribute("data-vt-body", "1");
+    if (!root.style.fontFamily) root.style.fontFamily = OUTLOOK_FONT_STACK;
+    if (!root.style.fontSize) root.style.fontSize = `${DEFAULT_SIZE_PT}pt`;
+    root.style.lineHeight = root.style.lineHeight || "1.35";
+    root.style.margin = "0";
+    root.style.padding = "0";
+    return box.innerHTML;
   }
-  return (
-    `<div style="font-family:${OUTLOOK_FONT_STACK};font-size:${DEFAULT_SIZE_PT}pt;color:#222;line-height:1.35;">` +
-    trimmed +
-    `</div>`
+
+  const wrap = document.createElement("div");
+  wrap.setAttribute("data-vt-body", "1");
+  wrap.setAttribute(
+    "style",
+    `font-family:${OUTLOOK_FONT_STACK};font-size:${DEFAULT_SIZE_PT}pt;color:#222;line-height:1.35;margin:0;padding:0;`
   );
+  while (box.firstChild) wrap.appendChild(box.firstChild);
+  return wrap.outerHTML;
 }
 
 function scheduleSaveCompose() {

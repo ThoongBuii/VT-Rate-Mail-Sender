@@ -189,8 +189,10 @@ def embed_local_and_cid_images(html: str, cid_map: Optional[dict[str, str]] = No
 def clipboard_html_for_compose(browser_html: str = "") -> str:
     """
     Ưu tiên CF_HTML Windows (Outlook), fallback HTML từ browser paste event.
-    Luôn cố nhúng ảnh file:// tạm của Outlook.
+    Luôn cố nhúng ảnh file:// tạm của Outlook; harden bảng + font cho New Mail.
     """
+    from .outlook_html import convert_px_font_sizes_to_pt, harden_tables_for_outlook
+
     html = ""
     if platform.system() == "Windows":
         try:
@@ -200,4 +202,6 @@ def clipboard_html_for_compose(browser_html: str = "") -> str:
     if not (html or "").strip():
         html = browser_html or ""
     html = embed_local_and_cid_images(html)
+    html = convert_px_font_sizes_to_pt(html)
+    html = harden_tables_for_outlook(html)
     return html.strip()
