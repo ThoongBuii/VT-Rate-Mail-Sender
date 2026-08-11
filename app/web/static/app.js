@@ -753,8 +753,21 @@ document.getElementById("btnStart").onclick = async () => {
 
 document.getElementById("btnPause").onclick = async () => {
   try {
-    if (state?.progress?.is_paused) await api("/api/send/resume", { method: "POST" });
-    else await api("/api/send/pause", { method: "POST" });
+    if (state?.progress?.is_paused) {
+      // Lưu SOẠN trước Resume — các mail còn lại dùng nội dung vừa sửa.
+      await saveCompose();
+      await api("/api/send/resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subject: document.getElementById("subject").value,
+          template_html: getComposeHtml(),
+          attachment: state?.attachment || "",
+        }),
+      });
+    } else {
+      await api("/api/send/pause", { method: "POST" });
+    }
   } catch (e) {
     alert(e.message);
   }

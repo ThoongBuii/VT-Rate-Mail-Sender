@@ -181,6 +181,55 @@ class MacOutlookSender:
     def __init__(self, config: AppConfig):
         self.config = config
 
+    def _list_outlook_accounts(self) -> list[str]:
+        """Email tài khoản thật trên máy (không dùng from_email cấu hình cứng)."""
+        script = """
+tell application "Microsoft Outlook"
+  set outList to {}
+  try
+    repeat with acc in exchange accounts
+      try
+        set end of outList to (email address of acc as string)
+      end try
+    end repeat
+  end try
+  try
+    repeat with acc in imap accounts
+      try
+        set end of outList to (email address of acc as string)
+      end try
+    end repeat
+  end try
+  try
+    repeat with acc in pop accounts
+      try
+        set end of outList to (email address of acc as string)
+      end try
+    end repeat
+  end try
+  set AppleScript's text item delimiters to "|"
+  set joined to outList as string
+  set AppleScript's text item delimiters to ""
+  return joined
+end tell
+"""
+        try:
+            raw = _run_osascript_file(script, timeout=60)
+        except Exception:  # noqa: BLE001
+            return []
+        emails: list[str] = []
+        seen: set[str] = set()
+        for part in (raw or "").split("|"):
+            em = part.strip()
+            if not em or "@" not in em:
+                continue
+            key = em.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            emails.append(em)
+        return emails
+
     def open_outlook(self) -> str:
         subprocess.run(["open", "-a", "Microsoft Outlook"], check=False)
         result = subprocess.run(
@@ -196,7 +245,11 @@ class MacOutlookSender:
                 "Bật Legacy Outlook = ON · đã đăng nhập.\n"
                 f"Chi tiết: {err or 'osascript failed'}"
             )
-        return self.config.from_email or "Outlook (Mac)"
+        # Hiển thị tài khoản sở tại trên máy — không lấy from_email cấu hình (vd overseas@…).
+        accounts = self._list_outlook_accounts()
+        if accounts:
+            return accounts[0]
+        return "tài khoản mặc định trên máy"
 
     def signature_status(self) -> dict[str, Any]:
         ok = has_ready_signature()

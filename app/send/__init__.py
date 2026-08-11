@@ -45,7 +45,10 @@ class OutlookDesktopSender:
             label = self._mac.open_outlook()
             self._ready = True
             self._account_label = label
-            return f"Outlook đã mở · {label} · Legacy ON · lấy chữ ký chuẩn 1 lần rồi gửi"
+            return (
+                f"Outlook đã mở · gửi bằng tài khoản sở tại: {label} · "
+                "Legacy ON · lấy chữ ký chuẩn 1 lần rồi gửi"
+            )
         if system == "Windows":
             try:
                 import win32com.client  # type: ignore

@@ -10,6 +10,8 @@ from .sender import OutlookDesktopSender
 
 
 ProgressCallback = Callable[[SendProgress], None]
+# Trả subject / template_html / attachment mới nhất từ khung Soạn (sau Pause sửa).
+ComposeProvider = Callable[[], dict]
 
 
 class SemiAutoQueue:
@@ -25,11 +27,13 @@ class SemiAutoQueue:
         delay_min: int = 10,
         delay_max: int = 20,
         on_progress: Optional[ProgressCallback] = None,
+        compose_provider: Optional[ComposeProvider] = None,
     ):
         self.sender = sender
         self.delay_min = delay_min
         self.delay_max = delay_max
         self.on_progress = on_progress
+        self.compose_provider = compose_provider
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._pause = threading.Event()
@@ -132,6 +136,18 @@ class SemiAutoQueue:
 
                 self.progress.current_index = idx
                 self.progress.current_agency = mail.agency_company or mail.account_mail
+                # Áp SOẠN mới nhất ngay trước gửi (Pause → sửa Soạn → Resume).
+                if self.compose_provider:
+                    try:
+                        comp = self.compose_provider() or {}
+                        if "subject" in comp and comp["subject"] is not None:
+                            mail.subject = str(comp["subject"])
+                        if "template_html" in comp and comp["template_html"] is not None:
+                            mail.template_mail = str(comp["template_html"])
+                        if "attachment" in comp and comp["attachment"] is not None:
+                            mail.attachment = str(comp["attachment"])
+                    except Exception:  # noqa: BLE001
+                        pass
                 mail.status = MailStatus.SENDING
                 self._emit()
 

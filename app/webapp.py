@@ -39,6 +39,7 @@ class AppState:
             delay_min=self.config.delay_min_seconds,
             delay_max=self.config.delay_max_seconds,
             on_progress=self._on_progress,
+            compose_provider=self._compose_snapshot,
         )
         self.mails: list[AgencyMail] = []
         self.subject: str = self.config.default_subject or SUGGESTED_SUBJECT
@@ -102,6 +103,14 @@ class AppState:
             mail.subject = self.subject
             mail.template_mail = self.template_html
             mail.attachment = self.attachment
+
+    def _compose_snapshot(self) -> dict[str, str]:
+        """Snapshot SOẠN hiện tại — queue lấy lại trước mỗi mail còn lại."""
+        return {
+            "subject": self.subject,
+            "template_html": self.template_html,
+            "attachment": self.attachment,
+        }
 
     def _on_progress(self, progress: SendProgress) -> None:
         with self._lock:
@@ -472,6 +481,17 @@ def api_send_pause():
 
 @flask_app.post("/api/send/resume")
 def api_send_resume():
+    # Pause → sửa SOẠN → Resume: nhận lại subject/template mới cho các mail còn lại.
+    data = request.get_json(force=True, silent=True) or {}
+    if "subject" in data:
+        STATE.subject = str(data.get("subject") or "").strip()
+    if "template_html" in data:
+        STATE.template_html = str(data.get("template_html") or "")
+    if "attachment" in data:
+        STATE.attachment = str(data.get("attachment") or "").strip()
+    if any(k in data for k in ("subject", "template_html", "attachment")):
+        STATE.apply_compose_to_mails()
+        STATE.save_config()
     STATE.queue.resume()
     return jsonify({"ok": True})
 
