@@ -16,7 +16,7 @@ from .windows import WindowsOutlookSender
 class OutlookDesktopSender:
     """
     Facade: App soạn Dear/bảng/remark.
-    - Windows: COM + merge chữ ký New Mail.
+    - Windows: COM New Mail → điền To/Cc/Subject/Body, chữ ký Outlook tự gắn.
     - macOS: chữ ký chuẩn cache 1 lần (như Windows merge) → set content mỗi lần gửi.
     """
 
@@ -63,7 +63,7 @@ class OutlookDesktopSender:
             self._account_label = (
                 accounts[0] if accounts else (self.config.from_email or "Outlook (Windows)")
             )
-            return f"Outlook đã sẵn sàng · {self._account_label}"
+            return f"Outlook đã sẵn sàng · {self._account_label} · New Mail COM (chữ ký tự gắn)"
         raise RuntimeError(f"Hệ điều hành chưa hỗ trợ: {system}")
 
     def test_connection(self) -> str:
