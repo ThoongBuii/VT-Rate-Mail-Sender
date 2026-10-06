@@ -54,15 +54,16 @@
         <label>Subject
           <input id="subject" type="text" placeholder="VT Rate Quotation – {{agency_company}}" />
         </label>
-        <div class="attach-row">
-          <label class="grow">Attachment
-            <input id="attachmentName" type="text" readonly placeholder="Chưa chọn file" />
-          </label>
-          <label class="file-btn compact">
-            Chọn file
-            <input id="fileAttach" type="file" hidden />
-          </label>
-          <button id="btnClearAttach" class="btn icon-btn" type="button" title="Xóa attachment">×</button>
+        <div class="attach-block">
+          <div class="attach-row">
+            <span class="attach-label">File đính kèm</span>
+            <label class="file-btn compact">
+              Thêm file
+              <input id="fileAttach" type="file" multiple hidden />
+            </label>
+            <button id="btnClearAttach" class="btn icon-btn" type="button" title="Xóa hết file">×</button>
+          </div>
+          <div id="attachList" class="attach-list" aria-live="polite"></div>
         </div>
       </div>
 
@@ -118,19 +119,15 @@
           <button type="button" class="fmt-btn" data-fmt="insertOrderedList" title="Number">1. List</button>
           <button type="button" class="fmt-btn" data-fmt="removeFormat" title="Xóa định dạng">Clear</button>
         </div>
-        <p class="fmt-hint muted">Bôi đen nội dung rồi chọn Font/Size/Màu — áp đúng toàn bộ vùng chọn (kể cả trong bảng).</p>
       </div>
 
       <div
         id="composeEditor"
-        class="compose-editor"
+        class="compose-editor drop-zone"
         contenteditable="true"
         spellcheck="false"
-        data-placeholder="Chỉ soạn Dear, bảng giá, remark… Không dán chữ ký. macOS: lấy chữ ký chuẩn 1 lần bằng nút trên thanh."
+        data-placeholder="Soạn Dear, bảng giá, remark… Kéo thả ảnh vào nội dung · file khác vào vùng đính kèm."
       ></div>
-      <p class="compose-hint muted" id="composeHint">
-        macOS ≈ Windows: «Lấy chữ ký chuẩn (1 lần)» từ New Mail → Semi-Auto gửi bằng set content (không dán UI). Legacy Outlook phải ON. Windows: chữ ký New Mail tự gắn.
-      </p>
       <div class="send-row">
         <button id="btnToPreview" class="btn primary" type="button">Sang Preview →</button>
         <button id="btnSuggest" class="btn ghost" type="button">Nạp gợi ý</button>
@@ -138,24 +135,28 @@
     </section>
 
     <section class="panel preview-panel hidden" id="viewPreview">
-      <div class="preview-nav">
-        <button id="btnPrevMail" class="btn ghost" type="button">← Trước</button>
-        <span id="previewCounter" class="muted">0 / 0</span>
-        <button id="btnNextMail" class="btn ghost" type="button">Sau →</button>
+      <div class="preview-main">
+        <div class="preview-nav">
+          <button id="btnPrevMail" class="btn ghost" type="button">← Trước</button>
+          <span id="previewCounter" class="muted">0 / 0</span>
+          <button id="btnNextMail" class="btn ghost" type="button">Sau →</button>
+        </div>
+        <div class="preview-meta" id="previewMeta"></div>
+        <iframe id="previewFrame" class="preview-frame" title="Preview mail"></iframe>
+        <div class="send-row">
+          <button id="btnStart" class="btn dark" type="button">▶ Semi-Auto</button>
+          <button id="btnPause" class="btn warn" type="button" disabled>⏸ Pause</button>
+          <button id="btnStop" class="btn danger" type="button" disabled>⏹ Stop</button>
+          <button id="btnBackCompose" class="btn ghost" type="button">← Soạn lại</button>
+        </div>
       </div>
-      <div class="preview-meta" id="previewMeta"></div>
-      <iframe id="previewFrame" class="preview-frame" title="Preview mail"></iframe>
-      <div class="send-row">
-        <button id="btnStart" class="btn dark" type="button">▶ Semi-Auto</button>
-        <button id="btnPause" class="btn warn" type="button" disabled>⏸ Pause</button>
-        <button id="btnStop" class="btn danger" type="button" disabled>⏹ Stop</button>
-        <button id="btnBackCompose" class="btn ghost" type="button">← Soạn lại</button>
+      <div class="preview-status">
+        <div class="progress-wrap">
+          <div class="progress-bar"><div id="progressFill"></div></div>
+          <div id="progressText" class="muted"></div>
+        </div>
+        <pre id="logBox" class="log"></pre>
       </div>
-      <div class="progress-wrap">
-        <div class="progress-bar"><div id="progressFill"></div></div>
-        <div id="progressText" class="muted"></div>
-      </div>
-      <pre id="logBox" class="log"></pre>
     </section>
   </main>
 

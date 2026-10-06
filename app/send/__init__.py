@@ -6,6 +6,7 @@ import platform
 from pathlib import Path
 from typing import Any, Optional
 
+from ..attach_util import split_attachments
 from ..models import AgencyMail, AppConfig
 from ..sender_smtp import split_emails
 from ..template_engine import render_body_html, render_subject
@@ -75,10 +76,7 @@ class OutlookDesktopSender:
     def clear_credentials(self) -> None:
         self._ready = False
 
-    def resolve_attachment(self, mail: AgencyMail) -> Optional[Path]:
-        raw = (mail.attachment or "").strip()
-        if not raw:
-            return None
+    def _resolve_one_path(self, raw: str) -> Path:
         path = Path(raw)
         if path.is_file():
             return path
@@ -97,24 +95,35 @@ class OutlookDesktopSender:
             return candidate
         raise FileNotFoundError(f"Không tìm thấy file đính kèm: {raw}")
 
+    def resolve_attachment(self, mail: AgencyMail) -> Optional[Path]:
+        """Giữ tương thích cũ — trả file đầu tiên nếu có."""
+        paths = self.resolve_attachments(mail)
+        return paths[0] if paths else None
+
+    def resolve_attachments(self, mail: AgencyMail) -> list[Path]:
+        parts = split_attachments(mail.attachment)
+        if not parts:
+            return []
+        return [self._resolve_one_path(p) for p in parts]
+
     def preview(self, mail: AgencyMail) -> dict[str, Any]:
         subject = render_subject(mail)
         body_html = render_body_html(mail, "")
         try:
-            att = self.resolve_attachment(mail)
-            att_name = att.name if att else "(không có)"
+            paths = self.resolve_attachments(mail)
+            att_names = [p.name for p in paths]
+            att_name = ", ".join(att_names) if att_names else "(không có)"
             att_ok = True
             att_error = ""
         except FileNotFoundError as exc:
             att_name = mail.attachment
+            att_names = split_attachments(mail.attachment)
             att_ok = False
             att_error = str(exc)
 
-        note = "Chữ ký mặc định Outlook sẽ tự gắn khi gửi (giống New Mail)."
         mac_ready = True
         if platform.system() == "Darwin":
             st = self._mac.signature_status()
-            note = st["message"]
             mac_ready = bool(st.get("ready"))
 
         return {
@@ -123,12 +132,12 @@ class OutlookDesktopSender:
             "subject": subject,
             "body_html": body_html,
             "attachment": att_name,
+            "attachments": att_names if att_ok else split_attachments(mail.attachment),
             "attachment_ok": att_ok,
             "attachment_error": att_error,
             "agency_company": mail.agency_company,
             "account_name": mail.account_name,
             "from": self.account_email or self.config.from_email or "Outlook default account",
-            "signature_note": note,
             "mac_signature_ready": mac_ready,
         }
 
@@ -167,13 +176,13 @@ class OutlookDesktopSender:
         subject = render_subject(mail)
         body_html = render_body_html(mail, "")
         cc_list = split_emails(mail.mail_cc)
-        attachment = self.resolve_attachment(mail)
+        attachments = self.resolve_attachments(mail)
 
         system = platform.system()
         if system == "Darwin":
-            self._mac.send(to_list, cc_list, subject, body_html, attachment)
+            self._mac.send(to_list, cc_list, subject, body_html, attachments)
         elif system == "Windows":
-            self._win.send(to_list, cc_list, subject, body_html, attachment)
+            self._win.send(to_list, cc_list, subject, body_html, attachments)
         else:
             raise RuntimeError(f"Hệ điều hành chưa hỗ trợ: {system}")
 

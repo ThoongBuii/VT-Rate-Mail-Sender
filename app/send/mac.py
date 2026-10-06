@@ -444,7 +444,7 @@ end tell
         cc_list: list[str],
         subject: str,
         body_html: str,
-        attachment: Optional[Path],
+        attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
         Giống Windows merge: body app + chữ ký cache → set content → Send.
@@ -474,13 +474,15 @@ end tell
             f'  make new cc recipient at msg with properties {{email address:{{address:"{_esc(cc)}"}}}}'
             for cc in cc_list
         )
-        if attachment:
-            att = _esc(str(attachment.resolve()))
-            att_block = (
-                f'  make new attachment at msg with properties {{file:POSIX file "{att}"}}'
-            )
-        else:
-            att_block = ""
+        files: list[Path] = []
+        if isinstance(attachment, Path):
+            files = [attachment]
+        elif attachment:
+            files = [p for p in attachment if p is not None]
+        att_block = "\n".join(
+            f'  make new attachment at msg with properties {{file:POSIX file "{_esc(str(p.resolve()))}"}}'
+            for p in files
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             full_path = Path(tmp) / "full.html"

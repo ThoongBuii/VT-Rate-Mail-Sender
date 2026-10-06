@@ -432,16 +432,124 @@ function renderList() {
   });
 }
 
-function setAttachmentUi(path) {
-  document.getElementById("attachmentName").value = path
-    ? String(path).split(/[/\\]/).pop()
-    : "";
+function attachmentItemsFromState(s) {
+  if (Array.isArray(s?.attachments) && s.attachments.length) {
+    return s.attachments.map((p) => ({
+      path: p,
+      name: String(p).split(/[/\\]/).pop(),
+    }));
+  }
+  const raw = (s?.attachment || "").trim();
+  if (!raw) return [];
+  return raw.split("|||").filter(Boolean).map((p) => ({
+    path: p.trim(),
+    name: p.trim().split(/[/\\]/).pop(),
+  }));
+}
+
+function setAttachmentUi(itemsOrPath) {
+  const box = document.getElementById("attachList");
+  if (!box) return;
+  let items = [];
+  if (Array.isArray(itemsOrPath)) {
+    items = itemsOrPath.map((it) =>
+      typeof it === "string"
+        ? { path: it, name: String(it).split(/[/\\]/).pop() }
+        : { path: it.path, name: it.name || String(it.path).split(/[/\\]/).pop() }
+    );
+  } else if (itemsOrPath) {
+    items = attachmentItemsFromState({ attachment: String(itemsOrPath) });
+  }
+  if (state) {
+    state.attachment = items.map((i) => i.path).join("|||");
+    state.attachments = items.map((i) => i.path);
+  }
+  if (!items.length) {
+    box.innerHTML = `<span class="attach-empty">Chưa chọn file</span>`;
+    return;
+  }
+  box.innerHTML = items
+    .map(
+      (it) => `
+      <span class="attach-chip" title="${escapeHtml(it.path)}">
+        <span>${escapeHtml(it.name)}</span>
+        <button type="button" data-path="${escapeHtml(it.path)}" aria-label="Xóa">×</button>
+      </span>`
+    )
+    .join("");
+  box.querySelectorAll("button[data-path]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        const res = await api(
+          `/api/attachment?path=${encodeURIComponent(btn.getAttribute("data-path") || "")}`,
+          { method: "DELETE" }
+        );
+        setAttachmentUi(res.attachments || res.paths || []);
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+  });
+}
+
+async function uploadAttachmentFiles(fileList) {
+  const files = Array.from(fileList || []).filter(Boolean);
+  if (!files.length) return;
+  const fd = new FormData();
+  files.forEach((f) => fd.append("file", f));
+  const res = await api("/api/attachment", { method: "POST", body: fd });
+  setAttachmentUi(res.attachments || res.paths || []);
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Không đọc được ảnh"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function insertImagesFromFiles(files) {
+  for (const file of files) {
+    if (!file.type.startsWith("image/")) continue;
+    const uri = await readFileAsDataUrl(file);
+    if (!uri) continue;
+    insertHtmlAtCursor(
+      `<p style="margin:0 0 0.6em;"><img src="${uri}" alt="${escapeHtml(file.name || "image")}" style="max-width:100%;height:auto;" /></p>`
+    );
+  }
+  scheduleSaveCompose();
+}
+
+function bindDropZone(el, { onFiles }) {
+  if (!el) return;
+  el.addEventListener("dragenter", (ev) => {
+    ev.preventDefault();
+    el.classList.add("drag-over");
+  });
+  el.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+    el.classList.add("drag-over");
+  });
+  el.addEventListener("dragleave", () => el.classList.remove("drag-over"));
+  el.addEventListener("drop", async (ev) => {
+    ev.preventDefault();
+    el.classList.remove("drag-over");
+    const files = Array.from(ev.dataTransfer?.files || []);
+    if (!files.length) return;
+    try {
+      await onFiles(files);
+    } catch (e) {
+      alert(e.message || String(e));
+    }
+  });
 }
 
 function applyState(s, forceHtml = false) {
   state = s;
   document.getElementById("subject").value = s.subject || "";
-  setAttachmentUi(s.attachment || "");
+  setAttachmentUi(attachmentItemsFromState(s));
   document.getElementById("delayMin").value = s.delay_min;
   document.getElementById("delayMax").value = s.delay_max;
   document.getElementById("stats").textContent =
@@ -543,7 +651,6 @@ async function loadPreview(index) {
     <div><b>File</b><span>${att}</span></div>
     <div><b>Agency</b><span>${escapeHtml(p.agency_company || "")} · ${escapeHtml(p.account_name || "")}</span></div>
     <div><b>Status</b><span class="st st-${p.status}">${escapeHtml(p.status || "")}</span></div>
-    <div class="sig-note"><b>Chữ ký</b><span>${escapeHtml(p.signature_note || "Outlook gắn khi gửi")}</span></div>
   `;
   document.getElementById("previewFrame").srcdoc = frameDoc(p.body_html || "");
   renderList();
@@ -622,9 +729,25 @@ editor.addEventListener("blur", () => {
   saveCompose().catch(() => {});
 });
 editor.addEventListener("paste", async (ev) => {
-  // Chèn tại con trỏ — Mac ưu tiên WebArchive (giữ ảnh chữ ký)
   ev.preventDefault();
   ev.stopPropagation();
+
+  // Ảnh thuần từ clipboard (Win/Mac) → data URI trong body
+  const imageFiles = [];
+  try {
+    const items = Array.from(ev.clipboardData?.items || []);
+    for (const it of items) {
+      if (it.kind === "file" && it.type.startsWith("image/")) {
+        const f = it.getAsFile();
+        if (f) imageFiles.push(f);
+      }
+    }
+  } catch (_) {}
+  if (imageFiles.length) {
+    await insertImagesFromFiles(imageFiles);
+    return;
+  }
+
   let browserHtml = "";
   try {
     browserHtml = ev.clipboardData?.getData("text/html") || "";
@@ -637,12 +760,6 @@ editor.addEventListener("paste", async (ev) => {
     });
     insertHtmlAtCursor(res.html || res.template_html || "");
     scheduleSaveCompose();
-    if (res.has_broken_cid) {
-      alert(
-        "Đã dán nhưng còn logo dạng cid (có thể mất ảnh khi gửi).\n" +
-          "Thử lại: New Mail → chọn cả khối chữ ký có logo → Cmd+C → dán lại."
-      );
-    }
   } catch (e) {
     const text = ev.clipboardData?.getData("text/plain") || "";
     if (text) {
@@ -654,11 +771,41 @@ editor.addEventListener("paste", async (ev) => {
   }
 });
 
+bindDropZone(editor, {
+  async onFiles(files) {
+    const images = files.filter((f) => f.type.startsWith("image/"));
+    const others = files.filter((f) => !f.type.startsWith("image/"));
+    if (images.length) await insertImagesFromFiles(images);
+    if (others.length) await uploadAttachmentFiles(others);
+  },
+});
+
+// Preview: kéo thả ảnh → soạn; file khác → đính kèm (đồng bộ Soạn)
+bindDropZone(document.querySelector(".preview-main"), {
+  async onFiles(files) {
+    const images = files.filter((f) => f.type.startsWith("image/"));
+    const others = files.filter((f) => !f.type.startsWith("image/"));
+    if (images.length) {
+      await insertImagesFromFiles(images);
+      await saveCompose();
+      if (currentView === "preview") await loadPreview(previewIndex);
+    }
+    if (others.length) {
+      await uploadAttachmentFiles(others);
+      if (currentView === "preview") await loadPreview(previewIndex);
+    }
+  },
+});
+bindDropZone(document.querySelector(".attach-block"), {
+  async onFiles(files) {
+    await uploadAttachmentFiles(files);
+  },
+});
+
 document.getElementById("btnClearAttach").onclick = async () => {
   try {
     await api("/api/attachment", { method: "DELETE" });
-    setAttachmentUi("");
-    if (state) state.attachment = "";
+    setAttachmentUi([]);
   } catch (e) {
     alert(e.message);
   }
@@ -683,14 +830,8 @@ document.getElementById("fileImport").onchange = async (ev) => {
 };
 
 document.getElementById("fileAttach").onchange = async (ev) => {
-  const file = ev.target.files?.[0];
-  if (!file) return;
-  const fd = new FormData();
-  fd.append("file", file);
   try {
-    const res = await api("/api/attachment", { method: "POST", body: fd });
-    setAttachmentUi(res.path || res.name);
-    if (state) state.attachment = res.path || "";
+    await uploadAttachmentFiles(ev.target.files);
   } catch (e) {
     alert(e.message);
   } finally {

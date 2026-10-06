@@ -13,6 +13,7 @@ from .models import AgencyMail, AppConfig, MailStatus, SendProgress
 from .paths import bundle_dir, user_data_dir, web_dir
 from .queue_worker import SemiAutoQueue
 from .sender import OutlookDesktopSender
+from .attach_util import join_attachments, split_attachments
 from .template_engine import SUGGESTED_SUBJECT, SUGGESTED_TEMPLATE_HTML, render_body_html, render_subject
 
 ROOT = user_data_dir()
@@ -184,6 +185,7 @@ class AppState:
             "mac_signature_message": mac_sig.get("message") or "",
             "subject": self.subject,
             "attachment": self.attachment,
+            "attachments": split_attachments(self.attachment),
             "template_html": self.template_html,
             "selected_index": self.selected_index,
             "stats": {
@@ -258,11 +260,10 @@ def api_preview():
             "cc": preview.get("cc") or mail.mail_cc or "",
             "subject": preview.get("subject") or render_subject(mail),
             "attachment": preview.get("attachment") or "(không có)",
+            "attachments": preview.get("attachments") or [],
             "attachment_ok": preview.get("attachment_ok", True),
             "attachment_error": preview.get("attachment_error") or "",
             "body_html": preview.get("body_html") or render_body_html(mail, ""),
-            "signature_note": preview.get("signature_note")
-            or "Chữ ký mặc định Outlook sẽ tự gắn khi gửi (giống New Mail).",
         }
     )
 
@@ -386,25 +387,67 @@ def api_import():
 
 @flask_app.post("/api/attachment")
 def api_attachment():
-    f = request.files.get("file")
-    if not f:
+    """Thêm 1 hoặc nhiều file đính kèm (giữ file cũ)."""
+    files = request.files.getlist("file") or []
+    if not files and request.files.get("file"):
+        files = [request.files.get("file")]
+    files = [f for f in files if f and getattr(f, "filename", None)]
+    if not files:
         return jsonify({"ok": False, "error": "Thiếu file"}), 400
     UPLOAD_DIR.mkdir(exist_ok=True)
-    name = Path(f.filename or "attachment.bin").name
-    dest = UPLOAD_DIR / name
-    f.save(dest)
-    STATE.attachment = str(dest.resolve())
+    current = split_attachments(STATE.attachment)
+    added: list[str] = []
+    names: list[str] = []
+    for f in files:
+        name = Path(f.filename or "attachment.bin").name
+        dest = UPLOAD_DIR / name
+        # Trùng tên → thêm hậu tố
+        if dest.exists():
+            stem, suf = dest.stem, dest.suffix
+            n = 2
+            while dest.exists():
+                dest = UPLOAD_DIR / f"{stem}_{n}{suf}"
+                n += 1
+        f.save(dest)
+        path = str(dest.resolve())
+        if path not in current:
+            current.append(path)
+        added.append(path)
+        names.append(dest.name)
+    STATE.attachment = join_attachments(current)
     STATE.apply_compose_to_mails()
     STATE.save_config()
-    return jsonify({"ok": True, "path": STATE.attachment, "name": name})
+    return jsonify(
+        {
+            "ok": True,
+            "path": STATE.attachment,
+            "paths": current,
+            "name": ", ".join(names),
+            "attachments": [{"path": p, "name": Path(p).name} for p in current],
+        }
+    )
 
 
 @flask_app.delete("/api/attachment")
 def api_attachment_clear():
-    STATE.attachment = ""
+    """Xóa hết, hoặc ?path=... để xóa 1 file."""
+    target = (request.args.get("path") or "").strip()
+    if target:
+        current = [p for p in split_attachments(STATE.attachment) if p != target]
+        STATE.attachment = join_attachments(current)
+    else:
+        STATE.attachment = ""
     STATE.apply_compose_to_mails()
     STATE.save_config()
-    return jsonify({"ok": True, "path": "", "name": ""})
+    paths = split_attachments(STATE.attachment)
+    return jsonify(
+        {
+            "ok": True,
+            "path": STATE.attachment,
+            "paths": paths,
+            "attachments": [{"path": p, "name": Path(p).name} for p in paths],
+        }
+    )
 
 
 @flask_app.post("/api/validate")
@@ -420,7 +463,7 @@ def _validate_mails() -> tuple[int, int]:
         errs = m.validate()
         if not errs and m.attachment.strip():
             try:
-                STATE.sender.resolve_attachment(m)
+                STATE.sender.resolve_attachments(m)
             except FileNotFoundError as exc:
                 errs.append(str(exc))
         if errs:
@@ -451,8 +494,9 @@ def api_send_start():
         return jsonify({"ok": False, "error": "Chưa có danh sách agency"}), 400
     if not STATE.subject or not STATE.template_html.strip():
         return jsonify({"ok": False, "error": "Thiếu Subject hoặc nội dung mail"}), 400
-    if STATE.attachment and not Path(STATE.attachment).is_file():
-        return jsonify({"ok": False, "error": f"Không tìm thấy file: {STATE.attachment}"}), 400
+    for att_path in split_attachments(STATE.attachment):
+        if not Path(att_path).is_file():
+            return jsonify({"ok": False, "error": f"Không tìm thấy file: {att_path}"}), 400
     if not STATE.sender.is_ready:
         try:
             STATE.sender.open_outlook()
