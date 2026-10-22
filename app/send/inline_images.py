@@ -1,6 +1,6 @@
-"""Windows Outlook — ảnh body: tách file tạm + placeholder, chèn bằng WordEditor (giống paste tay).
+"""Windows Outlook — ảnh body: placeholder + WordEditor AddPicture (giống paste tay).
 
-Không dùng CID Attachments (Outlook hay hiện khung trống + file lộ Attachment bar).
+Tránh paste 2 lần: xóa Clipboard trước khi AddPicture; nếu Word chèn thừa shape thì xóa bản dư.
 """
 
 from __future__ import annotations
@@ -18,21 +18,19 @@ _IMG_TAG_RE = re.compile(r"""(?is)(<img\b)([^>]*?)(/?>)""")
 _SRC_DATA_RE = re.compile(
     r"""(?is)src\s*=\s*["'](data:image/([a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+))["']"""
 )
+_MARKER_LEFT_RE = re.compile(r"##VTIMG_\d+_[0-9a-f]+##", flags=re.I)
 
 _MAX_EMAIL_WIDTH = 650
 
 
 @dataclass
 class InlinePicture:
-    """Ảnh sẽ chèn InlineShapes — marker tìm trong Word sau khi set HTMLBody."""
-
     path: Path
     marker: str
     width_px: Optional[int] = None
     height_px: Optional[int] = None
 
 
-# Alias cũ (windows.py / cleanup) — cùng dataclass
 InlineCidImage = InlinePicture
 
 
@@ -42,7 +40,6 @@ def _ext_for_mime(subtype: str) -> str:
         return "jpg"
     if sub in {"png", "gif", "bmp"}:
         return sub
-    # webp / khác → png (Word/Outlook ổn định hơn)
     return "png"
 
 
@@ -97,7 +94,6 @@ def _resolve_display_size(
 
 
 def _write_image_file(raw: bytes, path: Path, *, want_ext: str) -> Path:
-    """Ghi file ảnh; webp/lạ → PNG qua Pillow."""
     try:
         from PIL import Image
 
@@ -118,11 +114,34 @@ def _write_image_file(raw: bytes, path: Path, *, want_ext: str) -> Path:
         return path
 
 
+def clear_windows_clipboard() -> None:
+    """Tránh AddPicture kích hoạt paste clipboard (ảnh Soạn còn trên clip → bị 2 lần)."""
+    try:
+        import win32clipboard  # type: ignore
+
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+        finally:
+            win32clipboard.CloseClipboard()
+        return
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        if user32.OpenClipboard(None):
+            try:
+                user32.EmptyClipboard()
+            finally:
+                user32.CloseClipboard()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def extract_data_images_as_placeholders(html: str) -> tuple[str, list[InlinePicture]]:
-    """
-    Thay <img src=data:image...> bằng marker text ##VTIMG_n##.
-    WordEditor sẽ Find marker → InlineShapes.AddPicture (giống paste tay).
-    """
+    """Thay <img data:image> bằng marker ##VTIMG_n_xxxx##."""
     if not html or "data:image/" not in html.lower():
         return html or "", []
 
@@ -156,19 +175,16 @@ def extract_data_images_as_placeholders(html: str) -> tuple[str, list[InlinePict
         items.append(
             InlinePicture(path=path, marker=marker, width_px=width, height_px=height)
         )
-        # Marker plain text — Word Find ổn định; ảnh thường đứng riêng block như paste tay
         return f'<p style="margin:0 0 0.6em;">{marker}</p>'
 
     return _IMG_TAG_RE.sub(_img_repl, html), items
 
 
-# Tên cũ — một số chỗ còn gọi
 def replace_data_images_with_cid(html: str) -> tuple[str, list[InlinePicture]]:
     return extract_data_images_as_placeholders(html)
 
 
 def _find_marker_range(word_doc: Any, marker: str) -> Any:
-    """Tìm Range chứa marker; None nếu không thấy."""
     try:
         rng = word_doc.Content
         find = rng.Find
@@ -179,7 +195,7 @@ def _find_marker_range(word_doc: Any, marker: str) -> Any:
             pass
         find.Text = marker
         find.Forward = True
-        find.Wrap = 0  # wdFindStop
+        find.Wrap = 0
         find.Format = False
         find.MatchCase = True
         find.MatchWholeWord = False
@@ -191,49 +207,109 @@ def _find_marker_range(word_doc: Any, marker: str) -> Any:
     return None
 
 
+def _remove_leftover_markers(word_doc: Any) -> None:
+    """Xóa mọi ##VTIMG_…## còn sót (tránh chữ marker / paste lệch)."""
+    try:
+        text = str(word_doc.Content.Text or "")
+    except Exception:  # noqa: BLE001
+        return
+    for marker in _MARKER_LEFT_RE.findall(text):
+        while True:
+            rng = _find_marker_range(word_doc, marker)
+            if rng is None:
+                break
+            try:
+                rng.Delete()
+            except Exception:  # noqa: BLE001
+                try:
+                    rng.Text = ""
+                except Exception:  # noqa: BLE001
+                    break
+
+
+def _shape_count(word_doc: Any) -> int:
+    try:
+        return int(word_doc.InlineShapes.Count)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def insert_pictures_via_word(word_doc: Any, pictures: list[InlinePicture]) -> int:
     """
-    Tìm marker trong WordEditor → xóa → AddPicture (inline, giống paste).
-    Trả số ảnh chèn thành công.
+    Tìm marker → xóa → AddPicture đúng 1 lần.
+    Clear clipboard trước mỗi lần chèn; nếu Word nhét thêm shape (paste clip) thì xóa bản dư.
     """
     if not word_doc or not pictures:
         return 0
 
+    clear_windows_clipboard()
     inserted = 0
+
     for pic in pictures:
         if not pic.path.is_file():
             continue
         try:
+            clear_windows_clipboard()
             rng = _find_marker_range(word_doc, pic.marker)
             if rng is None:
                 continue
 
-            rng.Text = ""
+            before = _shape_count(word_doc)
+            try:
+                rng.Delete()
+            except Exception:  # noqa: BLE001
+                rng.Text = ""
+
+            # Range sau Delete thường collapsed tại điểm chèn
             shape = rng.InlineShapes.AddPicture(
                 str(pic.path.resolve()),
                 False,  # LinkToFile
                 True,  # SaveWithDocument
             )
+
+            after = _shape_count(word_doc)
+            # Paste clipboard thừa → xóa shape mới nhất (giữ shape vừa AddPicture)
+            extra = after - before - 1
+            for _ in range(max(0, extra)):
+                try:
+                    word_doc.InlineShapes(after).Delete()
+                    after -= 1
+                except Exception:  # noqa: BLE001
+                    break
+
             try:
-                # msoTrue = -1 — giữ tỉ lệ như paste tay
-                shape.LockAspectRatio = -1
+                shape.LockAspectRatio = -1  # msoTrue
             except Exception:  # noqa: BLE001
                 pass
 
-            # Word dùng point (px → pt: *72/96) — ưu tiên Width, giữ aspect
             if pic.width_px and pic.width_px > 0:
-                shape.Width = float(pic.width_px) * 72.0 / 96.0
+                try:
+                    shape.Width = float(pic.width_px) * 72.0 / 96.0
+                except Exception:  # noqa: BLE001
+                    # shape có thể bị invalid sau dedupe — lấy shape cuối
+                    try:
+                        shape = word_doc.InlineShapes(_shape_count(word_doc))
+                        shape.LockAspectRatio = -1
+                        shape.Width = float(pic.width_px) * 72.0 / 96.0
+                    except Exception:  # noqa: BLE001
+                        pass
             elif pic.height_px and pic.height_px > 0:
-                shape.Height = float(pic.height_px) * 72.0 / 96.0
+                try:
+                    shape.Height = float(pic.height_px) * 72.0 / 96.0
+                except Exception:  # noqa: BLE001
+                    pass
 
             inserted += 1
+            clear_windows_clipboard()
         except Exception:  # noqa: BLE001
             continue
+
+    _remove_leftover_markers(word_doc)
+    clear_windows_clipboard()
     return inserted
 
 
 def attach_cid_images(mail_item: Any, items: list[InlinePicture]) -> None:
-    """Deprecated — giữ stub để import cũ không gãy; Plan A không dùng."""
     return
 
 

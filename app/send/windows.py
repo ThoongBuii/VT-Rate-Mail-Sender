@@ -20,6 +20,7 @@ from .html_merge import merge_body_with_outlook_signature
 from .inline_images import (
     InlinePicture,
     cleanup_temp_files,
+    clear_windows_clipboard,
     extract_data_images_as_placeholders,
     insert_pictures_via_word,
 )
@@ -136,10 +137,10 @@ class WindowsOutlookSender:
         if word_doc is not None:
             self._windows_delete_leading_empty_paragraphs(word_doc)
 
-        # 1) data:image → marker + file tạm (chưa đính CID)
+        # 1) data:image → marker + file tạm
         body_ready, pictures = extract_data_images_as_placeholders(body_html)
         existing = str(getattr(mail_item, "HTMLBody", None) or "")
-        # 2) Merge body + chữ ký Outlook (ảnh chữ ký CID giữ nguyên)
+        # 2) Merge body + chữ ký Outlook (không đụng chữ ký)
         mail_item.HTMLBody = merge_body_with_outlook_signature(body_ready, existing)
 
         try:
@@ -151,14 +152,16 @@ class WindowsOutlookSender:
         except Exception:  # noqa: BLE001
             pass
 
-        # 3) Chèn ảnh bằng Word (giống paste thủ công)
+        # 3) Chèn ảnh Word 1 lần — clear clipboard tránh paste đôi từ clip Soạn
         try:
+            clear_windows_clipboard()
             word_doc = mail_item.GetInspector.WordEditor
             if word_doc is not None and pictures:
-                time.sleep(0.15)
+                time.sleep(0.2)
                 insert_pictures_via_word(word_doc, pictures)
             if word_doc is not None:
                 self._windows_trim_gap_before_signature(word_doc)
+            clear_windows_clipboard()
         except Exception:  # noqa: BLE001
             pass
         return pictures
