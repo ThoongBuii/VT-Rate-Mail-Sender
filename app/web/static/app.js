@@ -690,20 +690,24 @@ function updateAxBanner(s) {
 }
 
 async function ensureMacAccessibilityOnce(s) {
+  // Chỉ nhắc AX khi chưa có chữ ký cache (cần để lấy chữ ký 1 lần)
   if (!s || s.platform !== "Darwin") return;
-  if (s.accessibility_trusted) {
-    updateAxBanner(s);
-    return;
-  }
-  updateAxBanner(s);
-  if (axPromptedThisSession) return;
+  const needAx = !s.mac_signature_ready && !s.accessibility_trusted;
+  updateAxBanner({
+    ...s,
+    accessibility_needed: needAx,
+    accessibility_message: needAx
+      ? "Cần Accessibility để «Lấy chữ ký chuẩn» (1 lần). Sau đó Semi-Auto không cần."
+      : s.accessibility_message || "",
+  });
+  if (!needAx || axPromptedThisSession) return;
   axPromptedThisSession = true;
   try {
     const st = await api("/api/accessibility/ensure", { method: "POST" });
     updateAxBanner({
       ...s,
       accessibility_trusted: !!st.trusted,
-      accessibility_needed: true,
+      accessibility_needed: !s.mac_signature_ready && !st.trusted,
       accessibility_message: st.message || "",
     });
   } catch (_) {
@@ -732,10 +736,12 @@ function applyState(s, forceHtml = false) {
     btnSig.hidden = !isMac;
     if (isMac) {
       const cached = !!(s.mac_signature_cached || s.mac_signature_has_file);
-      btnSig.textContent = cached ? "Cache chữ ký (không dùng) ✓" : "Cache chữ ký (không cần)";
+      const ready = !!s.mac_signature_ready;
+      btnSig.textContent = ready ? "Chữ ký chuẩn ✓" : "Lấy chữ ký chuẩn";
       btnSig.title =
         s.mac_signature_message ||
-        "Không cần: Semi-Auto dùng chữ ký Outlook gốc (tránh banner external images)";
+        "Bắt buộc 1 lần: Copy chữ ký New Mail → ảnh internal (hết banner privacy)";
+      btnSig.classList.toggle("ok-sig", ready);
     }
   }
   if (forceHtml || !getComposeHtml()) {

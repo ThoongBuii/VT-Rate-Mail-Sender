@@ -744,6 +744,21 @@ def api_send_start():
         except Exception as exc:  # noqa: BLE001
             return jsonify({"ok": False, "error": str(exc)}), 400
 
+    import platform as _plat
+
+    if _plat.system() == "Darwin":
+        mac_sig = STATE.sender.mac_signature_status()
+        if not mac_sig.get("ready"):
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": (
+                        "Chưa có chữ ký chuẩn Mac. "
+                        "Bấm «Lấy chữ ký chuẩn (1 lần)» rồi Semi-Auto."
+                    ),
+                }
+            ), 400
+
     _validate_mails()
     to_send = [m for m in STATE.mails if m.status == MailStatus.READY]
     if not to_send:

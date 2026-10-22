@@ -305,6 +305,70 @@ def read_mac_clipboard_html() -> tuple[str, dict[str, str]]:
     return html, cid_map
 
 
+def embed_remote_http_images(html: str, *, timeout: float = 8.0) -> str:
+    """
+    Tải ảnh src=http(s) → data URI (internal).
+    Tránh banner Outlook «To protect your privacy, some external images…».
+    """
+    if not html or not re.search(r"""src\s*=\s*["']https?://""", html, flags=re.I):
+        return html or ""
+
+    import urllib.request
+
+    cache: dict[str, str] = {}
+
+    def _fetch(url: str) -> Optional[str]:
+        if url in cache:
+            return cache[url]
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "VTRateMailSender/1.0"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+                ctype = (resp.headers.get_content_type() or "").lower()
+            if not raw or len(raw) > 4_000_000:
+                return None
+            if not ctype.startswith("image/"):
+                # đoán theo URL
+                ctype = _mime_for_name(urlparse(url).path or "x.png")
+            uri = f"data:{ctype};base64,{base64.b64encode(raw).decode('ascii')}"
+            cache[url] = uri
+            return uri
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _repl(m: re.Match[str]) -> str:
+        q = m.group(1)
+        src = m.group(2)
+        if not re.match(r"^https?://", src, flags=re.I):
+            return m.group(0)
+        uri = _fetch(src)
+        if not uri:
+            return m.group(0)
+        return f"src={q}{uri}{q}"
+
+    return re.sub(
+        r"""src\s*=\s*(['"])(https?://[^'"]+)\1""",
+        _repl,
+        html,
+        flags=re.I,
+    )
+
+
+def strip_cf_html_headers(html: str) -> str:
+    """Bỏ header CF_HTML (Version/StartHTML/MicrosoftInternetExplorer4) nếu lẫn vào."""
+    s = html or ""
+    if "MicrosoftInternetExplorer4" not in s and "StartHTML:" not in s:
+        return s
+    m = re.search(r"(?is)(<(!DOCTYPE\s+)?html\b|<body\b|<div\b)", s)
+    if m:
+        return s[m.start() :]
+    return s
+
+
 def embed_local_and_cid_images(html: str, cid_map: Optional[dict[str, str]] = None) -> str:
     """
     Chuyển src=file:// / cid: / tên file local thành data URI.

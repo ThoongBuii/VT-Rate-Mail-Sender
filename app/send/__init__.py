@@ -18,7 +18,7 @@ class OutlookDesktopSender:
     """
     Facade: App soạn Dear/bảng/remark (UI chung Mac/Windows).
     - Windows: COM New Mail → InsertFile body → chữ ký Outlook tự gắn → Send.
-    - macOS: New Mail + chữ ký CID sống + paste body (Accessibility).
+    - macOS: cache chữ ký 1 lần (ảnh internal) + set content + nhiều đính kèm.
     """
 
     def __init__(self, config: AppConfig):
