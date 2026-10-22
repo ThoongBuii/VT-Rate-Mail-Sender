@@ -1,6 +1,6 @@
-"""Windows Outlook: chuyển data:image trong HTML → attachment CID (ảnh mới hiện khi gửi).
+"""Windows Outlook — ảnh body: tách file tạm + placeholder, chèn bằng WordEditor (giống paste tay).
 
-Giữ kích thước ảnh (width/height px) để Outlook không thu nhỏ lung tung.
+Không dùng CID Attachments (Outlook hay hiện khung trống + file lộ Attachment bar).
 """
 
 from __future__ import annotations
@@ -14,34 +14,35 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-# PR_ATTACH_CONTENT_ID / PR_ATTACHMENT_HIDDEN (MAPI)
-_PR_ATTACH_CONTENT_ID = "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
-_PR_ATTACHMENT_HIDDEN = "http://schemas.microsoft.com/mapi/proptag/0x7FFE000B"
-
-# Match cả thẻ <img ...> có src=data:image
-_IMG_TAG_RE = re.compile(
-    r"""(?is)(<img\b)([^>]*?)(/?>)"""
-)
+_IMG_TAG_RE = re.compile(r"""(?is)(<img\b)([^>]*?)(/?>)""")
 _SRC_DATA_RE = re.compile(
     r"""(?is)src\s*=\s*["'](data:image/([a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+))["']"""
 )
 
-# Giới hạn chiều rộng hợp lý trong mail (Outlook hay scale nếu quá lớn)
 _MAX_EMAIL_WIDTH = 650
 
 
 @dataclass
-class InlineCidImage:
+class InlinePicture:
+    """Ảnh sẽ chèn InlineShapes — marker tìm trong Word sau khi set HTMLBody."""
+
     path: Path
-    cid: str
+    marker: str
+    width_px: Optional[int] = None
+    height_px: Optional[int] = None
+
+
+# Alias cũ (windows.py / cleanup) — cùng dataclass
+InlineCidImage = InlinePicture
 
 
 def _ext_for_mime(subtype: str) -> str:
     sub = (subtype or "png").split("+", 1)[0].lower().strip()
     if sub in {"jpeg", "jpg"}:
         return "jpg"
-    if sub in {"png", "gif", "bmp", "webp"}:
+    if sub in {"png", "gif", "bmp"}:
         return sub
+    # webp / khác → png (Word/Outlook ổn định hơn)
     return "png"
 
 
@@ -78,7 +79,6 @@ def _image_natural_size(raw: bytes) -> tuple[Optional[int], Optional[int]]:
 def _resolve_display_size(
     attrs: str, nat_w: Optional[int], nat_h: Optional[int]
 ) -> tuple[Optional[int], Optional[int]]:
-    """Ưu tiên width/height đã set trên thẻ; không thì dùng kích thước thật (cap max)."""
     style = _attr(attrs, "style")
     w = _parse_px(_attr(attrs, "width")) or _parse_px(_style_prop(style, "width"))
     h = _parse_px(_attr(attrs, "height")) or _parse_px(_style_prop(style, "height"))
@@ -96,50 +96,42 @@ def _resolve_display_size(
     return w, h
 
 
-def _rebuild_img_attrs(attrs: str, cid: str, width: Optional[int], height: Optional[int]) -> str:
-    # Bỏ src cũ + max-width gây Outlook thu nhỏ
-    attrs = re.sub(r"""(?is)\s*src\s*=\s*["'][^"']*["']""", "", attrs)
-    attrs = re.sub(r"""(?is)\s*width\s*=\s*["'][^"']*["']""", "", attrs)
-    attrs = re.sub(r"""(?is)\s*height\s*=\s*["'][^"']*["']""", "", attrs)
+def _write_image_file(raw: bytes, path: Path, *, want_ext: str) -> Path:
+    """Ghi file ảnh; webp/lạ → PNG qua Pillow."""
+    try:
+        from PIL import Image
 
-    style = _attr(attrs, "style")
-    if style:
-        style = re.sub(r"(?i)(?:^|;)\s*max-width\s*:[^;]*;?", ";", style)
-        style = re.sub(r"(?i)(?:^|;)\s*width\s*:[^;]*;?", ";", style)
-        style = re.sub(r"(?i)(?:^|;)\s*height\s*:[^;]*;?", ";", style)
-        style = re.sub(r";{2,}", ";", style).strip("; ").strip()
-        attrs = re.sub(r"""(?is)\s*style\s*=\s*["'][^"']*["']""", "", attrs)
-
-    parts = [f'src="cid:{cid}"']
-    style_bits: list[str] = []
-    if width:
-        parts.append(f'width="{width}"')
-        style_bits.append(f"width:{width}px")
-    if height:
-        parts.append(f'height="{height}"')
-        style_bits.append(f"height:{height}px")
-    # Không dùng max-width:100% — Outlook hay thu nhỏ ảnh vì CSS này
-    if style:
-        style_bits.insert(0, style)
-    if style_bits:
-        parts.append(f'style="{";".join(style_bits)}"')
-
-    rest = attrs.strip()
-    if rest:
-        return " " + " ".join(parts) + " " + rest
-    return " " + " ".join(parts)
+        with Image.open(io.BytesIO(raw)) as im:
+            if want_ext == "jpg":
+                if im.mode in ("RGBA", "P", "LA"):
+                    im = im.convert("RGB")
+                im.save(path, format="JPEG", quality=92)
+            elif want_ext == "png" or want_ext not in {"gif", "bmp"}:
+                if want_ext != "png":
+                    path = path.with_suffix(".png")
+                im.save(path, format="PNG")
+            else:
+                im.save(path)
+            return path
+    except Exception:  # noqa: BLE001
+        path.write_bytes(raw)
+        return path
 
 
-def replace_data_images_with_cid(html: str) -> tuple[str, list[InlineCidImage]]:
-    """Thay data:image bằng cid:…; ghi file tạm; giữ width/height px."""
+def extract_data_images_as_placeholders(html: str) -> tuple[str, list[InlinePicture]]:
+    """
+    Thay <img src=data:image...> bằng marker text ##VTIMG_n##.
+    WordEditor sẽ Find marker → InlineShapes.AddPicture (giống paste tay).
+    """
     if not html or "data:image/" not in html.lower():
         return html or "", []
 
-    items: list[InlineCidImage] = []
+    items: list[InlinePicture] = []
     tmp_dir = Path(tempfile.mkdtemp(prefix="vt_inline_"))
+    counter = {"n": 0}
 
     def _img_repl(m: re.Match[str]) -> str:
-        open_tag, attrs, close = m.group(1), m.group(2), m.group(3)
+        attrs = m.group(2)
         sm = _SRC_DATA_RE.search(attrs)
         if not sm:
             return m.group(0)
@@ -153,38 +145,99 @@ def replace_data_images_with_cid(html: str) -> tuple[str, list[InlineCidImage]]:
             return m.group(0)
 
         ext = _ext_for_mime(subtype)
-        cid = f"vt.img.{uuid.uuid4().hex[:16]}@vt.local"
-        path = tmp_dir / f"{cid.split('@', 1)[0]}.{ext}"
-        try:
-            path.write_bytes(raw)
-        except Exception:  # noqa: BLE001
-            return m.group(0)
+        idx = counter["n"]
+        counter["n"] = idx + 1
+        marker = f"##VTIMG_{idx}_{uuid.uuid4().hex[:8]}##"
+        path = tmp_dir / f"vt_img_{idx}.{ext}"
+        path = _write_image_file(raw, path, want_ext=ext)
 
         nat_w, nat_h = _image_natural_size(raw)
         width, height = _resolve_display_size(attrs, nat_w, nat_h)
-        items.append(InlineCidImage(path=path, cid=cid))
-        new_attrs = _rebuild_img_attrs(attrs, cid, width, height)
-        return f"{open_tag}{new_attrs}{close}"
+        items.append(
+            InlinePicture(path=path, marker=marker, width_px=width, height_px=height)
+        )
+        # Marker plain text — Word Find ổn định; ảnh thường đứng riêng block như paste tay
+        return f'<p style="margin:0 0 0.6em;">{marker}</p>'
 
     return _IMG_TAG_RE.sub(_img_repl, html), items
 
 
-def attach_cid_images(mail_item: Any, items: list[InlineCidImage]) -> None:
-    """Đính ảnh ẩn sau khi đã set HTMLBody (cid khớp Content-ID)."""
-    for item in items:
+# Tên cũ — một số chỗ còn gọi
+def replace_data_images_with_cid(html: str) -> tuple[str, list[InlinePicture]]:
+    return extract_data_images_as_placeholders(html)
+
+
+def _find_marker_range(word_doc: Any, marker: str) -> Any:
+    """Tìm Range chứa marker; None nếu không thấy."""
+    try:
+        rng = word_doc.Content
+        find = rng.Find
+        find.ClearFormatting()
         try:
-            att = mail_item.Attachments.Add(str(item.path), 1)  # olByValue
-            pa = att.PropertyAccessor
-            pa.SetProperty(_PR_ATTACH_CONTENT_ID, f"<{item.cid}>")
+            find.Replacement.ClearFormatting()
+        except Exception:  # noqa: BLE001
+            pass
+        find.Text = marker
+        find.Forward = True
+        find.Wrap = 0  # wdFindStop
+        find.Format = False
+        find.MatchCase = True
+        find.MatchWholeWord = False
+        find.MatchWildcards = False
+        if bool(find.Execute()):
+            return rng
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def insert_pictures_via_word(word_doc: Any, pictures: list[InlinePicture]) -> int:
+    """
+    Tìm marker trong WordEditor → xóa → AddPicture (inline, giống paste).
+    Trả số ảnh chèn thành công.
+    """
+    if not word_doc or not pictures:
+        return 0
+
+    inserted = 0
+    for pic in pictures:
+        if not pic.path.is_file():
+            continue
+        try:
+            rng = _find_marker_range(word_doc, pic.marker)
+            if rng is None:
+                continue
+
+            rng.Text = ""
+            shape = rng.InlineShapes.AddPicture(
+                str(pic.path.resolve()),
+                False,  # LinkToFile
+                True,  # SaveWithDocument
+            )
             try:
-                pa.SetProperty(_PR_ATTACHMENT_HIDDEN, True)
+                # msoTrue = -1 — giữ tỉ lệ như paste tay
+                shape.LockAspectRatio = -1
             except Exception:  # noqa: BLE001
                 pass
+
+            # Word dùng point (px → pt: *72/96) — ưu tiên Width, giữ aspect
+            if pic.width_px and pic.width_px > 0:
+                shape.Width = float(pic.width_px) * 72.0 / 96.0
+            elif pic.height_px and pic.height_px > 0:
+                shape.Height = float(pic.height_px) * 72.0 / 96.0
+
+            inserted += 1
         except Exception:  # noqa: BLE001
             continue
+    return inserted
 
 
-def cleanup_temp_files(items: list[InlineCidImage]) -> None:
+def attach_cid_images(mail_item: Any, items: list[InlinePicture]) -> None:
+    """Deprecated — giữ stub để import cũ không gãy; Plan A không dùng."""
+    return
+
+
+def cleanup_temp_files(items: list[InlinePicture]) -> None:
     paths = [i.path for i in items]
     for p in paths:
         try:
