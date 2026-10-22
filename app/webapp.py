@@ -219,10 +219,14 @@ class AppState:
         sent = sum(1 for m in self.mails if m.status == MailStatus.SENT)
         failed = sum(1 for m in self.mails if m.status == MailStatus.FAILED)
         mac_sig = self.sender.mac_signature_status()
+        mac_ax = self.sender.mac_accessibility_status()
         return {
             "outlook_ready": self.sender.is_ready,
             "outlook_account": self.sender.account_email,
             "platform": platform.system(),
+            "accessibility_trusted": bool(mac_ax.get("trusted")),
+            "accessibility_needed": bool(mac_ax.get("needed")),
+            "accessibility_message": mac_ax.get("message") or "",
             "mac_signature_ready": bool(mac_sig.get("ready")),
             "mac_signature_cached": bool(mac_sig.get("cached") or mac_sig.get("has_file")),
             "mac_signature_has_file": bool(mac_sig.get("has_file")),
@@ -338,6 +342,22 @@ def api_outlook_capture_signature():
 @flask_app.get("/api/outlook/signature-status")
 def api_outlook_signature_status():
     return jsonify({"ok": True, **STATE.sender.mac_signature_status()})
+
+
+@flask_app.get("/api/accessibility/status")
+def api_accessibility_status():
+    st = STATE.sender.mac_accessibility_status()
+    return jsonify({"ok": True, **st})
+
+
+@flask_app.post("/api/accessibility/ensure")
+def api_accessibility_ensure():
+    """macOS: hiện dialog hệ thống nếu chưa có Accessibility; đã có thì không hỏi lại."""
+    try:
+        st = STATE.sender.mac_ensure_accessibility(prompt=True)
+        return jsonify({"ok": True, **st})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @flask_app.post("/api/clipboard/paste")

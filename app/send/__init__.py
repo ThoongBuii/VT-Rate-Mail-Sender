@@ -162,6 +162,16 @@ class OutlookDesktopSender:
             }
         return self._mac.signature_status()
 
+    def mac_accessibility_status(self) -> dict[str, Any]:
+        if platform.system() != "Darwin":
+            return {"trusted": True, "needed": False, "message": ""}
+        return self._mac.accessibility_status()
+
+    def mac_ensure_accessibility(self, *, prompt: bool = True) -> dict[str, Any]:
+        if platform.system() != "Darwin":
+            return {"trusted": True, "needed": False, "message": ""}
+        return self._mac.ensure_accessibility(prompt=prompt)
+
     def send_one(self, mail: AgencyMail) -> None:
         if not self._ready:
             self.open_outlook()

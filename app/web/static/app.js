@@ -3,6 +3,7 @@ let pollTimer = null;
 let currentView = "compose";
 let previewIndex = 0;
 let saveTimer = null;
+let axPromptedThisSession = false;
 
 async function api(path, options = {}) {
   const res = await fetch(path, options);
@@ -672,6 +673,44 @@ function bindDropZone(el, { onFiles }) {
   });
 }
 
+function updateAxBanner(s) {
+  const banner = document.getElementById("axBanner");
+  if (!banner) return;
+  const need =
+    s.platform === "Darwin" &&
+    s.accessibility_needed !== false &&
+    !s.accessibility_trusted;
+  banner.hidden = !need;
+  const text = document.getElementById("axBannerText");
+  if (text && need) {
+    text.textContent =
+      s.accessibility_message ||
+      "Cần bật Accessibility cho «VT Rate Mail Sender» để gửi mail mượt (paste body).";
+  }
+}
+
+async function ensureMacAccessibilityOnce(s) {
+  if (!s || s.platform !== "Darwin") return;
+  if (s.accessibility_trusted) {
+    updateAxBanner(s);
+    return;
+  }
+  updateAxBanner(s);
+  if (axPromptedThisSession) return;
+  axPromptedThisSession = true;
+  try {
+    const st = await api("/api/accessibility/ensure", { method: "POST" });
+    updateAxBanner({
+      ...s,
+      accessibility_trusted: !!st.trusted,
+      accessibility_needed: !!st.needed,
+      accessibility_message: st.message || "",
+    });
+  } catch (_) {
+    /* banner vẫn hiện */
+  }
+}
+
 function applyState(s, forceHtml = false) {
   state = s;
   document.getElementById("subject").value = s.subject || "";
@@ -680,6 +719,7 @@ function applyState(s, forceHtml = false) {
   document.getElementById("delayMax").value = s.delay_max;
   document.getElementById("stats").textContent =
     `${s.stats.total} agency · ready ${s.stats.ready} · sent ${s.stats.sent} · fail ${s.stats.failed}`;
+  updateAxBanner(s);
   if (s.outlook_ready) {
     setOutlookStatus(`Outlook sẵn sàng · ${s.outlook_account || ""}`);
   } else {
@@ -1105,9 +1145,27 @@ document.getElementById("btnStop").onclick = async () => {
   }
 };
 
+document.getElementById("btnAxOpen")?.addEventListener("click", async () => {
+  try {
+    const st = await api("/api/accessibility/ensure", { method: "POST" });
+    if (state) {
+      state.accessibility_trusted = !!st.trusted;
+      state.accessibility_message = st.message || "";
+      updateAxBanner(state);
+    }
+  } catch (e) {
+    alert(e.message || String(e));
+  }
+});
+document.getElementById("btnAxDismiss")?.addEventListener("click", () => {
+  const banner = document.getElementById("axBanner");
+  if (banner) banner.hidden = true;
+});
+
 (async function boot() {
   initFormatToolbar();
   const s = await api("/api/state");
   applyState(s, true);
+  await ensureMacAccessibilityOnce(s);
   startPolling();
 })();
