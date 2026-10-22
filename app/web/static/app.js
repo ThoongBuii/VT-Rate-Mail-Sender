@@ -690,13 +690,25 @@ function updateAxBanner(s) {
 }
 
 async function ensureMacAccessibilityOnce(s) {
-  // Semi-Auto Mac không bắt buộc Accessibility — chỉ hiện banner gợi ý, không ép dialog
   if (!s || s.platform !== "Darwin") return;
-  updateAxBanner({
-    ...s,
-    accessibility_needed: false, // gửi không cần AX
-  });
+  if (s.accessibility_trusted) {
+    updateAxBanner(s);
+    return;
+  }
+  updateAxBanner(s);
+  if (axPromptedThisSession) return;
   axPromptedThisSession = true;
+  try {
+    const st = await api("/api/accessibility/ensure", { method: "POST" });
+    updateAxBanner({
+      ...s,
+      accessibility_trusted: !!st.trusted,
+      accessibility_needed: true,
+      accessibility_message: st.message || "",
+    });
+  } catch (_) {
+    /* banner vẫn hiện */
+  }
 }
 
 function applyState(s, forceHtml = false) {

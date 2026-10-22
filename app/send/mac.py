@@ -1,19 +1,16 @@
-"""macOS Outlook — body app + chữ ký Outlook gốc (CID), không mở cửa sổ.
+"""macOS Outlook — New Mail + chữ ký sống (CID) + paste body phía trên.
 
-Vấn đề cache chữ ký trong app:
-- Ảnh hay thành http/data → người nhận thấy
-  «To protect your privacy, some external images…» → trông như mail tự động.
-Chữ ký New Mail tay của Outlook dùng CID nội bộ → không có banner đó.
+`set content` rồi `set signature` trên Legacy Mac: chữ ký không gắn.
+`do shell script cat` HTML lớn: cắt body (vd «Keep in tou»).
+Cache chữ ký trong app: banner «external images» → trông mail bot.
 
-Cách Mac hoàn thiện (nhanh + chuẩn như gửi tay):
-1) make outgoing message — KHÔNG open (tránh chậm / focus)
-2) To·Cc·Subject
-3) set content = chỉ BODY (không nhét chữ ký base64)
-4) set signature = chữ ký Outlook (AMBER) — Outlook gắn ảnh CID gốc
-5) Send → chờ Outbox hết mới báo OK
+Cách đúng (gần gửi tay):
+1) New Mail + signature Outlook + To/Cc — open ngắn để chữ ký CID render
+2) Clipboard = chỉ body → click vùng messages → Cmd+V (không đè chữ ký)
+3) Kiểm tra body + chữ ký còn → Send
+4) Chờ Outbox ngắn
 
-Không cần cache / Accessibility cho Semi-Auto.
-Legacy Outlook = ON.
+Cần Accessibility. Legacy Outlook = ON.
 """
 
 from __future__ import annotations
@@ -240,8 +237,8 @@ end tell
         return emails
 
     def open_outlook(self) -> str:
-        # Semi-Auto không cần Accessibility; chỉ kiểm tra im lặng (banner UI nếu thiếu)
-        ensure_assistive_access(prompt=False)
+        # Nhắc Accessibility nếu chưa có (cần để paste body trên chữ ký)
+        ensure_assistive_access(prompt=True)
         subprocess.run(["open", "-a", "Microsoft Outlook"], check=False)
         result = subprocess.run(
             ["osascript", "-l", "JavaScript", "-e", 'Application("Microsoft Outlook").name();'],
@@ -265,12 +262,12 @@ end tell
         trusted = ensure_assistive_access(prompt=False)
         return {
             "trusted": trusted,
-            # Semi-Auto không cần AX; chỉ dùng khi lấy cache chữ ký tay
-            "needed": False,
+            "needed": True,
             "message": (
                 "Accessibility đã bật."
                 if trusted
-                else "Không bắt buộc cho Semi-Auto. Chỉ cần nếu dùng «Cache chữ ký»."
+                else "Cần Accessibility để dán body phía trên chữ ký Outlook "
+                "(System Settings → Privacy & Security → Accessibility)."
             ),
         }
 
@@ -279,7 +276,7 @@ end tell
         return self.accessibility_status()
 
     def signature_status(self) -> dict[str, Any]:
-        """Semi-Auto dùng chữ ký Outlook gốc — cache chỉ dự phòng, không khuyến nghị."""
+        """Semi-Auto: chữ ký New Mail sống (CID). Cần Accessibility để paste body."""
         cached = has_ready_signature()
         ax = ensure_assistive_access(prompt=False)
         return {
@@ -290,10 +287,9 @@ end tell
             "cached": cached,
             "accessibility_trusted": ax,
             "message": (
-                "Mac: body app + chữ ký Outlook gốc (CID, không banner privacy). "
-                "Không cần cache. "
-                + ("Cache cũ vẫn còn (không dùng khi gửi). " if cached else "")
-                + ("Accessibility OK (chỉ cần nếu lấy cache tay)." if ax else "")
+                "Mac: New Mail + chữ ký Outlook CID + paste body. "
+                + ("Accessibility OK. " if ax else "Cần bật Accessibility. ")
+                + ("Cache cũ không dùng khi gửi." if cached else "")
             ),
         }
 
@@ -503,27 +499,27 @@ end tell
   if msg is missing value then error "Không tìm thấy draft {_esc(token)}"
 '''
 
-    def _focus_compose_body_and_paste(self, *, y_ratio: float = 0.62) -> None:
-        """Click vùng body (không phải To) rồi Cmd+V — cần Accessibility."""
+    def _focus_compose_body_and_paste(self, *, y_ratio: float = 0.52) -> None:
+        """Click vùng messages (trên chữ ký) rồi Cmd+V — cần Accessibility."""
         script = f'''
 tell application "Microsoft Outlook" to activate
-delay 0.2
+delay 0.12
 tell application "System Events"
   tell process "Microsoft Outlook"
     set frontmost to true
-    delay 0.15
+    delay 0.1
     set win to front window
     set {{wx, wy}} to position of win
     set {{ww, wh}} to size of win
     set clickX to (wx + (ww / 2)) as integer
+    -- ~ giữa cửa sổ: vùng body, không phải ô To, không đáy chữ ký
     set clickY to (wy + (wh * {y_ratio})) as integer
-    -- Escape bỏ selection ô To nếu đang focus
     key code 53
-    delay 0.08
+    delay 0.05
     click at {{clickX, clickY}}
-    delay 0.2
+    delay 0.12
     keystroke "v" using {{command down}}
-    delay 0.45
+    delay 0.35
   end tell
 end tell
 return "ok"
@@ -531,7 +527,7 @@ return "ok"
         _run_nsapplescript(script)
 
     def _count_outbox_matching(self, subject: str, to_email: str) -> int:
-        """Đếm mail trong Outbox khớp subject/to — 0 = đã gửi xong (hoặc không còn)."""
+        """Đếm mail trong Outbox khớp subject — 0 = đã gửi xong."""
         script = f'''
 tell application "Microsoft Outlook"
   set n to 0
@@ -550,52 +546,16 @@ tell application "Microsoft Outlook"
 end tell
 '''
         try:
-            raw = _run_osascript_file(script, timeout=30)
+            raw = _run_osascript_file(script, timeout=15)
             return max(0, int((raw or "0").strip() or "0"))
         except Exception:  # noqa: BLE001
-            return -1  # không đọc được Outbox
-
-    def _trigger_send_receive(self) -> None:
-        try:
-            _run_osascript_file(
-                '''
-tell application "Microsoft Outlook"
-  try
-    send
-  end try
-end tell
-''',
-                timeout=20,
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        # Legacy: Cmd+K / menu Send & Receive nếu `send` không có
-        try:
-            if ensure_assistive_access(prompt=False):
-                _run_nsapplescript(
-                    '''
-tell application "Microsoft Outlook" to activate
-delay 0.1
-tell application "System Events"
-  tell process "Microsoft Outlook"
-    keystroke "k" using {command down}
-  end tell
-end tell
-'''
-                )
-        except Exception:  # noqa: BLE001
-            pass
+            return -1
 
     def _wait_outbox_clear(
-        self, subject: str, to_email: str, *, timeout: float = 40.0
+        self, subject: str, to_email: str, *, timeout: float = 12.0
     ) -> None:
-        """
-        send msg chỉ xếp vào Outbox. Chờ Outbox hết mail khớp — nếu kẹt
-        (thông báo «A message could not be sent») thì báo lỗi, không ghi SENT OK.
-        """
-        # Chờ mail kịp vào Outbox trước khi đếm (tránh báo OK sớm)
-        time.sleep(1.8)
-        self._trigger_send_receive()
+        """Chờ Outbox ngắn — không làm Semi-Auto chậm thêm hàng phút."""
+        time.sleep(0.8)
         deadline = time.time() + timeout
         last = -1
         while time.time() < deadline:
@@ -603,19 +563,14 @@ end tell
             if last == 0:
                 return
             if last < 0:
-                # Không đọc được folder Outbox — không chặn Semi-Auto
-                time.sleep(1.5)
-                return
-            time.sleep(1.2)
-            if time.time() < deadline:
-                self._trigger_send_receive()
+                return  # không đọc được Outbox — không chặn
+            time.sleep(0.9)
         raise RuntimeError(
             "Outlook Mac: mail kẹt Outbox / «A message could not be sent».\n"
             f"Subject: {subject}\n"
             f"To: {to_email}\n"
-            "Kiểm tra kết nối tài khoản Exchange · Send & Receive · "
-            "xóa mail lỗi trong Outbox rồi thử lại.\n"
-            f"(Outbox còn ~{last} mail khớp sau {int(timeout)}s)"
+            "Xóa Outbox lỗi · kiểm tra tài khoản · thử lại.\n"
+            f"(còn ~{last} sau {int(timeout)}s)"
         )
 
     def send(
@@ -627,9 +582,10 @@ end tell
         attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
-        Body app → chữ ký Outlook gốc (CID) → Send, không mở cửa sổ, không cache.
-        Tránh banner «external images» của chữ ký nhúng trong app.
+        New Mail + chữ ký CID sống → paste body (clipboard, không cắt HTML) → Send.
         """
+        from ..clipboard_html import set_mac_clipboard_html
+
         prepared = prepare_body_html_for_outlook(body_html)
         if not (prepared or "").strip():
             raise ValueError("Nội dung mail trống — không gửi.")
@@ -645,6 +601,8 @@ end tell
 
         files = self._normalize_files(attachment)
         prev_app = _frontmost_app_name()
+        token = f"[VT-{uuid.uuid4().hex[:8]}]"
+        temp_subject = f"{token} drafting"[:180]
         primary_to = to_list[0]
 
         to_block = "\n".join(
@@ -659,33 +617,23 @@ end tell
             f'  make new attachment at msg with properties {{file:POSIX file "{_esc(str(p.resolve()))}"}}'
             for p in files
         )
+        find_draft = self._find_draft_by_token_script(token)
+
+        if not ensure_assistive_access(prompt=True):
+            raise RuntimeError(
+                "Cần Accessibility cho «VT Rate Mail Sender».\n"
+                "System Settings → Privacy & Security → Accessibility → bật app.\n"
+                "(Dùng để dán body phía trên chữ ký Outlook — giữ ảnh CID, không cắt HTML.)"
+            )
 
         self._close_vt_send_drafts()
 
-        with tempfile.TemporaryDirectory() as tmp:
-            body_path = Path(tmp) / "body.html"
-            body_path.write_text(prepared_marked, encoding="utf-8")
-
-            # Một script: body trước → signature Outlook sau (ảnh CID gốc).
-            # Không open cửa sổ · không đọc/merge chữ ký · không paste UI.
-            script = f'''
-set bodyPath to "{body_path}"
-set bodyText to do shell script "cat " & quoted form of bodyPath
-if bodyText is "" then error "Body HTML trống"
-if bodyText does not contain "{_esc(marker_id)}" then error "Body thiếu marker"
-
+        # 1) New Mail + chữ ký sống + To/Cc (open ngắn — bắt buộc để CID render)
+        create_script = f'''
 tell application "Microsoft Outlook"
   set msg to make new outgoing message
 {_account_block(self.config.from_email)}
-
-  set subject of msg to "{_esc(subject)}"
-{to_block}
-{cc_block}
-
-  -- Chỉ body app (nhẹ). Không nhét chữ ký base64 → không chậm / không banner privacy.
-  set content of msg to bodyText
-
-  -- Chữ ký Outlook gốc (CID) — giống New Mail tay
+  set subject of msg to "{_esc(temp_subject)}"
   try
     set signature of msg to signature "AMBER"
   end try
@@ -697,43 +645,99 @@ tell application "Microsoft Outlook"
   try
     if (count of signatures) > 0 then set signature of msg to item 1 of signatures
   end try
-
+{to_block}
+{cc_block}
 {att_block}
+  open msg
+  delay 0.55
+  return "ok"
+end tell
+'''
+        try:
+            try:
+                _run_nsapplescript(create_script)
+            except Exception:  # noqa: BLE001
+                _run_osascript_file(create_script, timeout=60)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Outlook Mac không tạo được New Mail.\n"
+                f"{exc}\n"
+                "Legacy Outlook = ON · đã đăng nhập."
+            ) from exc
+
+        # 2) Paste body qua clipboard — tránh cắt «Keep in tou» của do shell script cat
+        try:
+            set_mac_clipboard_html(prepared_marked)
+            self._focus_compose_body_and_paste(y_ratio=0.50)
+        except Exception as exc:  # noqa: BLE001
+            self._close_vt_send_drafts(token)
+            raise RuntimeError(
+                "Không dán được body vào New Mail.\n"
+                f"{exc}\n"
+                "Kiểm tra Accessibility · Legacy ON."
+            ) from exc
+
+        # 3) Subject thật + kiểm tra body & chữ ký còn → Send
+        finish_script = f'''
+tell application "Microsoft Outlook"
+{find_draft}
+
+  try
+    delete (every to recipient of msg)
+  end try
+  try
+    delete (every cc recipient of msg)
+  end try
+{to_block}
+{cc_block}
+  set subject of msg to "{_esc(subject)}"
 
   set bodyCheck to ""
   try
     set bodyCheck to content of msg as string
   end try
-  if bodyCheck does not contain "{_esc(marker_id)}" then error "Body bị mất sau khi gắn chữ ký — hủy"
-  if (length of bodyCheck) < 80 then error "Nội dung quá ngắn — hủy"
+  if bodyCheck does not contain "{_esc(marker_id)}" then error "Body chưa vào messages — hủy Send"
+  if (length of bodyCheck) < 120 then error "Body quá ngắn / bị cắt — hủy Send"
+
+  -- Chữ ký Outlook phải còn (contains AS không phân biệt hoa thường)
+  set sigOk to false
+  if bodyCheck contains "Best Regards" then set sigOk to true
+  if bodyCheck contains "VT Logistics" then set sigOk to true
+  if bodyCheck contains "vtlogistics" then set sigOk to true
+  if bodyCheck contains "AMBER" then set sigOk to true
+  if bodyCheck contains "Vo Tran" then set sigOk to true
+  if not sigOk then error "Mất chữ ký Outlook sau paste — hủy Send"
 
   set toCount to 0
   try
     set toCount to count of (to recipients of msg)
   end try
   if toCount < 1 then error "To trống — hủy gửi"
-
   try
     set firstTo to address of email address of item 1 of (to recipients of msg) as string
     if firstTo does not contain "@" then error "To không phải email — hủy"
-    if (length of firstTo) > 120 then error "To bất thường — hủy"
+    if (length of firstTo) > 120 then error "To bị dán nhầm nội dung — hủy"
+    if firstTo contains "MicrosoftInternetExplorer" then error "To bẩn — hủy"
   end try
 
   send msg
 end tell
 '''
-            try:
-                _run_osascript_file(script, timeout=90)
-            except RuntimeError as exc:
-                raise RuntimeError(
-                    "Outlook Mac gửi thất bại.\n"
-                    f"{exc}\n"
-                    "Legacy Outlook = ON · chữ ký AMBER / mặc định account OK khi New Mail tay."
-                ) from exc
+        try:
+            _run_osascript_file(finish_script, timeout=60)
+        except RuntimeError as exc:
+            self._close_vt_send_drafts(token)
+            raise RuntimeError(
+                "Outlook Mac gửi thất bại.\n"
+                f"{exc}\n"
+                "Legacy ON · Accessibility · chữ ký AMBER khi New Mail tay OK."
+            ) from exc
 
         try:
-            self._wait_outbox_clear(subject, primary_to, timeout=45.0)
+            self._wait_outbox_clear(subject, primary_to, timeout=12.0)
         except RuntimeError:
+            self._close_vt_send_drafts(token)
             raise
 
+        self._close_vt_send_drafts(token)
         _activate_app(prev_app)
