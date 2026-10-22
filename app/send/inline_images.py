@@ -1,10 +1,11 @@
 """Windows Outlook — ảnh body đúng vị trí như gửi tay.
 
 Cách làm:
-1) Thay mỗi <img data:image> bằng marker text ##VTIMG_n_xxxx## (đúng chỗ ảnh trong HTML)
+1) Thay mỗi <img data:image> bằng marker text ##VTIMG_n_xxxx## (đúng chỗ ảnh)
 2) Merge body + chữ ký Outlook (HTMLBody) — chữ ký không đụng
-3) Với từng marker: đưa ảnh vào Clipboard (CF_DIB) → Range.Paste **đè** marker
-   → 1 ảnh, đúng chỗ, không khung trống / không dán xuống cuối
+3) Xóa marker → InlineShapes.AddPicture (embed, không link) tại đúng chỗ
+4) Xóa shape rỗng / shape cạnh cạnh (khung dashed kế ảnh) nếu có
+Không dùng Clipboard Paste — Paste hay để lại khung trống cạnh ảnh.
 """
 
 from __future__ import annotations
@@ -24,6 +25,10 @@ _SRC_DATA_RE = re.compile(
 )
 
 _MAX_EMAIL_WIDTH = 650
+
+# Word: wdInlineShapePicture=3, wdInlineShapeLinkedPicture=4
+_WD_INLINE_PICTURE = 3
+_WD_INLINE_LINKED_PICTURE = 4
 
 
 @dataclass
@@ -140,31 +145,8 @@ def clear_windows_clipboard() -> None:
         pass
 
 
-def _set_clipboard_dib(path: Path) -> None:
-    from PIL import Image
-    import win32clipboard  # type: ignore
-
-    with Image.open(path) as im:
-        if im.mode == "RGBA":
-            bg = Image.new("RGB", im.size, (255, 255, 255))
-            bg.paste(im, mask=im.split()[3])
-            im = bg
-        elif im.mode != "RGB":
-            im = im.convert("RGB")
-        buf = io.BytesIO()
-        im.save(buf, "BMP")
-        dib = buf.getvalue()[14:]
-
-    win32clipboard.OpenClipboard()
-    try:
-        win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib)
-    finally:
-        win32clipboard.CloseClipboard()
-
-
 def extract_data_images_as_placeholders(html: str) -> tuple[str, list[InlinePicture]]:
-    """Thay mỗi ảnh bằng marker **đúng vị trí** trong HTML (không dồn xuống cuối)."""
+    """Thay mỗi ảnh bằng marker **đúng vị trí** trong HTML."""
     if not html or "data:image/" not in html.lower():
         return html or "", []
 
@@ -194,7 +176,6 @@ def extract_data_images_as_placeholders(html: str) -> tuple[str, list[InlinePict
         items.append(
             InlinePicture(path=path, marker=marker, width_px=width, height_px=height)
         )
-        # Marker plain — Word Find + Paste đè tại chỗ
         return marker
 
     return _IMG_TAG_RE.sub(_img_repl, html), items
@@ -248,100 +229,159 @@ def _apply_size(shape: Any, pic: InlinePicture) -> None:
         pass
 
 
-def _shape_at_or_near(word_doc: Any, pos: int, *, window: int = 120) -> Any:
-    best = None
-    best_dist = window + 1
+def _shape_area(shape: Any) -> float:
     try:
-        n = _shape_count(word_doc)
+        return float(shape.Width) * float(shape.Height)
     except Exception:  # noqa: BLE001
-        return None
+        return 0.0
+
+
+def _shape_type(shape: Any) -> int:
+    try:
+        return int(shape.Type)
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def _looks_empty_frame(shape: Any) -> bool:
+    """Khung dashed trống / linked hỏng — hay nằm kế ảnh thật."""
+    t = _shape_type(shape)
+    if t == _WD_INLINE_LINKED_PICTURE:
+        return True
+    try:
+        w = float(shape.Width)
+        h = float(shape.Height)
+    except Exception:  # noqa: BLE001
+        return False
+    if w < 4 or h < 4:
+        return True
+    # Khung placeholder Outlook đôi khi có size nhưng không có ảnh thật
+    try:
+        # ScaleHeight/ScaleWidth bất thường hoặc PictureFormat lỗi
+        _ = shape.PictureFormat
+    except Exception:  # noqa: BLE001
+        return True
+    return False
+
+
+def _delete_neighbor_shapes(
+    word_doc: Any, keep_start: int, *, window: int = 120
+) -> None:
+    """Giữ 1 ảnh tốt tại chỗ chèn; xóa khung trống / bản trùng kế bên."""
+    candidates: list[tuple[int, int, float, bool, Any]] = []
+    # (index, start, area, is_empty, shape)
+    n = _shape_count(word_doc)
     for i in range(1, n + 1):
         try:
-            shape = word_doc.InlineShapes(i)
-            st = int(shape.Range.Start)
-            dist = abs(st - pos)
-            if dist < best_dist:
-                best_dist = dist
-                best = shape
+            s = word_doc.InlineShapes(i)
+            st = int(s.Range.Start)
+            if abs(st - keep_start) > window:
+                continue
+            candidates.append(
+                (i, st, _shape_area(s), _looks_empty_frame(s), s)
+            )
         except Exception:  # noqa: BLE001
             continue
-    return best
+
+    if len(candidates) <= 1:
+        # Vẫn xóa nếu đúng 1 mà là empty/linked
+        if len(candidates) == 1 and candidates[0][3]:
+            try:
+                candidates[0][4].Delete()
+            except Exception:  # noqa: BLE001
+                pass
+        return
+
+    # Chọn shape giữ lại: không empty, Type picture, area lớn nhất, gần keep_start
+    keep = None
+    best_score = None
+    for item in candidates:
+        _i, st, area, is_empty, s = item
+        if is_empty:
+            continue
+        t = _shape_type(s)
+        type_bonus = 100000.0 if t == _WD_INLINE_PICTURE else 0.0
+        score = (type_bonus + area, -abs(st - keep_start))
+        if best_score is None or score > best_score:
+            best_score = score
+            keep = item
+
+    if keep is None:
+        # Không có shape tốt — xóa hết empty gần đó
+        for _i, _st, _a, is_empty, s in sorted(candidates, key=lambda x: -x[0]):
+            if is_empty:
+                try:
+                    s.Delete()
+                except Exception:  # noqa: BLE001
+                    pass
+        return
+
+    keep_idx = keep[0]
+    # Xóa từ index cao → thấp
+    for i, _st, _a, _e, s in sorted(candidates, key=lambda x: -x[0]):
+        if i == keep_idx:
+            continue
+        try:
+            s.Delete()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _replace_marker_with_image(word_doc: Any, pic: InlinePicture) -> bool:
     """
-    Tìm marker → Paste clipboard **đè** đúng range marker.
-    Không Delete trước (tránh khung trống + ảnh chạy xuống dưới).
+    Tìm marker → xóa text → AddPicture embed tại chỗ.
+    Không Paste clipboard (tránh khung dashed + ảnh kế bên).
     """
     if not pic.path.is_file() or pic.path.stat().st_size < 32:
         return False
+
+    clear_windows_clipboard()
 
     rng = _find_text_range(word_doc, pic.marker)
     if rng is None:
         return False
 
     try:
-        marker_start = int(rng.Start)
+        pos = int(rng.Start)
     except Exception:  # noqa: BLE001
-        marker_start = 0
-
-    clear_windows_clipboard()
-    try:
-        _set_clipboard_dib(pic.path)
-    except Exception:  # noqa: BLE001
-        clear_windows_clipboard()
         return False
 
-    before_n = _shape_count(word_doc)
+    # Xóa marker trước — không để text lẫn với ảnh
     try:
-        # Prefer Selection.Paste (giống Ctrl+V) — Range.Paste đôi khi lệch trên WordEditor
-        try:
-            rng.Select()
-            word_doc.Application.Selection.Paste()
-        except Exception:  # noqa: BLE001
-            rng.Paste()
+        rng.Text = ""
     except Exception:  # noqa: BLE001
-        clear_windows_clipboard()
-        # Fallback: xóa marker rồi AddPicture tại chỗ (ít dùng)
         try:
-            rng2 = _find_text_range(word_doc, pic.marker)
-            if rng2 is None:
-                return False
-            pos = int(rng2.Start)
-            rng2.Text = ""
-            r = word_doc.Range(pos, pos)
-            shape = r.InlineShapes.AddPicture(str(pic.path.resolve()), False, True)
-            _apply_size(shape, pic)
-            return True
+            rng.Delete()
         except Exception:  # noqa: BLE001
             return False
 
-    time.sleep(0.08)
     clear_windows_clipboard()
+    time.sleep(0.05)
 
-    after_n = _shape_count(word_doc)
-    shape = _shape_at_or_near(word_doc, marker_start)
+    abs_path = str(pic.path.resolve())
+    before_n = _shape_count(word_doc)
 
-    # Nếu Paste tạo thêm shape thừa sát chỗ marker — xóa bản xa hơn / bản thứ 2
-    if after_n > before_n + 1 and shape is not None:
-        try:
-            keep_start = int(shape.Range.Start)
-            for i in range(_shape_count(word_doc), 0, -1):
-                try:
-                    s = word_doc.InlineShapes(i)
-                    st = int(s.Range.Start)
-                    if abs(st - marker_start) < 150 and abs(st - keep_start) > 3:
-                        s.Delete()
-                except Exception:  # noqa: BLE001
-                    continue
-            shape = _shape_at_or_near(word_doc, marker_start)
-        except Exception:  # noqa: BLE001
-            pass
+    try:
+        r = word_doc.Range(pos, pos)
+        # LinkToFile=False, SaveWithDocument=True → embed, không khung linked trống
+        shape = r.InlineShapes.AddPicture(abs_path, False, True)
+    except Exception:  # noqa: BLE001
+        return False
 
-    if shape is not None:
-        _apply_size(shape, pic)
+    clear_windows_clipboard()
+    time.sleep(0.05)
 
-    # Marker text còn sót → xóa
+    try:
+        keep_start = int(shape.Range.Start)
+    except Exception:  # noqa: BLE001
+        keep_start = pos
+
+    _apply_size(shape, pic)
+
+    # Xóa khung trống / shape trùng kế bên (đúng bug screenshot: box | ảnh)
+    _delete_neighbor_shapes(word_doc, keep_start, window=150)
+
+    # Marker sót
     leftover = _find_text_range(word_doc, pic.marker)
     if leftover is not None:
         try:
@@ -352,7 +392,8 @@ def _replace_marker_with_image(word_doc: Any, pic: InlinePicture) -> bool:
             except Exception:  # noqa: BLE001
                 pass
 
-    return after_n > before_n or shape is not None
+    after_n = _shape_count(word_doc)
+    return after_n >= before_n
 
 
 def insert_pictures_via_word(word_doc: Any, pictures: list[InlinePicture]) -> int:
@@ -361,14 +402,25 @@ def insert_pictures_via_word(word_doc: Any, pictures: list[InlinePicture]) -> in
 
     clear_windows_clipboard()
     inserted = 0
+    insert_positions: list[int] = []
 
-    # Thứ tự xuôi — mỗi ảnh đúng chỗ marker của nó
     for pic in pictures:
         try:
+            rng = _find_text_range(word_doc, pic.marker)
+            approx = int(rng.Start) if rng is not None else -1
             if _replace_marker_with_image(word_doc, pic):
                 inserted += 1
+                if approx >= 0:
+                    insert_positions.append(approx)
         except Exception:  # noqa: BLE001
             continue
+
+    # Pass cuối: dọn linked/empty còn sót sát chỗ vừa chèn
+    for pos in insert_positions:
+        try:
+            _delete_neighbor_shapes(word_doc, pos, window=180)
+        except Exception:  # noqa: BLE001
+            pass
 
     clear_windows_clipboard()
     return inserted

@@ -4,7 +4,7 @@ Luồng ổn định (giống gửi tay về chữ ký + ảnh):
 1) CreateItem + Display = New Mail (Outlook tự gắn chữ ký + ảnh CID chữ ký)
 2) Điền To / Cc / Subject qua COM
 3) Merge body HTML phía trên chữ ký (giữ nguyên chữ ký Outlook)
-4) Ảnh trong body: marker tại chỗ → Clipboard CF_DIB + Range.Paste đè marker
+4) Ảnh trong body: marker tại chỗ → AddPicture embed (không Paste clipboard)
 5) Đính file thường (nếu có) → Send
 """
 
@@ -125,7 +125,7 @@ class WindowsOutlookSender:
     ) -> list[InlinePicture]:
         """
         Chèn nội dung HTML phía trên chữ ký Outlook (không đụng chữ ký).
-        Ảnh: marker đúng chỗ trong HTML → Paste đè marker (không dồn xuống cuối).
+        Ảnh: marker đúng chỗ → AddPicture embed; dọn khung trống kế bên.
         """
         word_doc = None
         try:
@@ -152,7 +152,7 @@ class WindowsOutlookSender:
         except Exception:  # noqa: BLE001
             pass
 
-        # 3) Paste ảnh đè từng marker — clear clipboard trước/sau
+        # 3) AddPicture embed tại marker — clear clipboard (tránh paste thừa)
         try:
             clear_windows_clipboard()
             word_doc = mail_item.GetInspector.WordEditor
