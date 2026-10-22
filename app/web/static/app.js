@@ -103,10 +103,17 @@ function normalizeHtmlForOutlook(html) {
 }
 
 function scheduleSaveCompose() {
+  // Đang gõ trong khung soạn: KHÔNG autosave HTML (bảng lớn → giật).
+  // Chỉ lưu subject/delay; HTML lưu lúc blur / Preview / Semi-Auto.
   if (saveTimer) clearTimeout(saveTimer);
+  const inEditor = document.activeElement === composeEl();
   saveTimer = setTimeout(() => {
-    saveCompose({ normalize: false }).catch(() => {});
-  }, 1200);
+    if (inEditor) {
+      saveCompose({ normalize: false, html_skip: true }).catch(() => {});
+    } else {
+      saveCompose({ normalize: false }).catch(() => {});
+    }
+  }, 900);
 }
 
 function frameDoc(html) {
@@ -762,15 +769,18 @@ async function refreshState(forceHtml = false) {
 
 async function saveCompose(extra = {}) {
   const normalize = extra.normalize !== false;
-  const { normalize: _n, ...rest } = extra;
+  const htmlSkip = !!extra.html_skip;
+  const { normalize: _n, html_skip: _h, ...rest } = extra;
   const payload = {
     subject: document.getElementById("subject").value,
-    template_html: getComposeHtml({ normalize }),
     delay_min: Number(document.getElementById("delayMin").value || 10),
     delay_max: Number(document.getElementById("delayMax").value || 20),
     selected_index: state ? state.selected_index : 0,
     ...rest,
   };
+  if (!htmlSkip) {
+    payload.template_html = getComposeHtml({ normalize });
+  }
   await api("/api/compose", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -959,7 +969,8 @@ document.getElementById("btnSigSave")?.addEventListener("click", async () => {
 const editor = composeEl();
 editor.addEventListener("input", scheduleSaveCompose);
 editor.addEventListener("blur", () => {
-  saveCompose().catch(() => {});
+  // Rời khung soạn → mới ghi HTML (mượt khi gõ)
+  saveCompose({ normalize: true }).catch(() => {});
 });
 editor.addEventListener("paste", async (ev) => {
   ev.preventDefault();

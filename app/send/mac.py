@@ -391,10 +391,13 @@ end tell
         attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
-        Cache chữ ký + merge body → set content → Send.
-        Không mở cửa sổ, không paste UI, không đọc lại content (tránh timeout).
+        Cache chữ ký + merge → ảnh data: đổi sang CID file đính kèm → set content → Send.
+
+        Lý do: Outlook Mac `set content` với data:image thường biến thành ảnh ngoài
+        → banner «external images were not downloaded» cho người nhận.
         """
         from ..clipboard_html import strip_cf_html_headers
+        from .mac_inline import prepare_mac_send_html
 
         if not has_ready_signature():
             raise RuntimeError(
@@ -405,7 +408,6 @@ end tell
 
         prepared = prepare_body_html_for_outlook(body_html)
         prepared = strip_cf_html_headers(prepared)
-        # Ảnh trong message: giữ data URI / harden (prepare_body đã xử lý)
         if not (prepared or "").strip():
             raise ValueError("Nội dung mail trống — không gửi.")
         if not to_list:
@@ -434,16 +436,42 @@ end tell
             f'  make new cc recipient at msg with properties {{email address:{{address:"{_esc(cc)}"}}}}'
             for cc in cc_list
         )
-        att_block = "\n".join(
+        user_att_block = "\n".join(
             f'  make new attachment at msg with properties {{file:POSIX file "{_esc(str(p.resolve()))}"}}'
             for p in files
         )
 
         with tempfile.TemporaryDirectory() as tmp:
-            full_path = Path(tmp) / "full.html"
-            full_path.write_text(full, encoding="utf-8")
+            tmp_path = Path(tmp)
+            send_html, cid_parts = prepare_mac_send_html(full, tmp_path / "cid_imgs")
+            full_path = tmp_path / "full.html"
+            full_path.write_text(send_html, encoding="utf-8")
 
-            # Đọc utf8 từ file — tránh cat cắt HTML; không open / không đọc lại content
+            # Đính ảnh CID trước (tên file = phần trước @ của cid) rồi mới set content
+            inline_att_lines: list[str] = []
+            for cid, img_path in cid_parts:
+                # cid vt0@vt.local → name vt0.png khớp file
+                name = img_path.name
+                inline_att_lines.append(
+                    "  try\n"
+                    f'    make new attachment at msg with properties '
+                    f'{{file:POSIX file "{_esc(str(img_path.resolve()))}", name:"{_esc(name)}"}}\n'
+                    "  end try"
+                )
+                # Một số bản Outlook khớp cid theo name không có đuôi
+                stem_cid = cid.split("@")[0]
+                if name != f"{stem_cid}{img_path.suffix}":
+                    pass
+            # HTML dùng cid:vtN@vt.local — đổi thêm alias cid:vtN.png cho khớp name
+            for cid, img_path in cid_parts:
+                send_html = send_html.replace(
+                    f"cid:{cid}",
+                    f"cid:{img_path.name}",
+                )
+            full_path.write_text(send_html, encoding="utf-8")
+
+            inline_att_block = "\n".join(inline_att_lines)
+
             script = f'''
 set fullPath to "{full_path}"
 set fullText to read (POSIX file fullPath) as «class utf8»
@@ -455,8 +483,9 @@ tell application "Microsoft Outlook"
   set subject of msg to "{_esc(subject)}"
 {to_block}
 {cc_block}
+{inline_att_block}
   set content of msg to fullText
-{att_block}
+{user_att_block}
   set toCount to 0
   try
     set toCount to count of (to recipients of msg)
@@ -471,7 +500,7 @@ end tell
                 raise RuntimeError(
                     "Outlook Mac gửi thất bại.\n"
                     f"{exc}\n"
-                    "Legacy Outlook = ON · đã «Lấy chữ ký chuẩn (1 lần)»."
+                    "Legacy Outlook = ON · đã lưu chữ ký (ảnh internal)."
                 ) from exc
 
         _activate_app(prev_app)
