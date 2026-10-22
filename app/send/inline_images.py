@@ -1,12 +1,10 @@
-"""Windows Outlook — ảnh body: A (CID MAPI) + C (AddPicture/BreakLink repair).
+"""Windows Outlook — ảnh body qua Word InsertFile (cách khác A/C).
 
-A — Chính (thứ tự quan trọng):
-  1) data:image → <img src="cid:..." alt="VTIMG:...">
-  2) Attachments.Add + PR_ATTACH_CONTENT_ID + ATT_MHTML_REF
-  3) Mới gán HTMLBody (để Outlook bind cid, tránh khung trống sớm)
-
-C — Repair nếu còn khung hỏng / linked trong body (trước Best Regards):
-  BreakLink → nếu vẫn hỏng: xóa shape → AddPicture embed + BreakLink
+Không gán HTMLBody cho ảnh (tránh khung cid trống / paste lệch).
+1) data:image → PNG trên đĩa + <img src=\"file:///ABS_PATH\">
+2) Ghi file .htm tạm
+3) WordEditor.Range(0,0).InsertFile(htm) — chèn phía trên chữ ký New Mail
+4) BreakLink mọi ảnh body (trước Best Regards) để embed trong mail
 """
 
 from __future__ import annotations
@@ -26,31 +24,19 @@ _SRC_DATA_RE = re.compile(
 )
 
 _MAX_EMAIL_WIDTH = 650
-
-_PR_ATTACH_CONTENT_ID = "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
-_PR_ATTACH_MIME_TAG = "http://schemas.microsoft.com/mapi/proptag/0x370E001F"
-_PR_ATTACH_FLAGS = "http://schemas.microsoft.com/mapi/proptag/0x37140003"  # 4 = ATT_MHTML_REF
-
-_WD_INLINE_PICTURE = 3
 _WD_INLINE_LINKED_PICTURE = 4
-
-_ALT_PREFIX = "VTIMG:"
 
 
 @dataclass
 class InlinePicture:
     path: Path
-    cid: str
+    cid: str = ""
     width_px: Optional[int] = None
     height_px: Optional[int] = None
 
     @property
     def marker(self) -> str:
-        return self.cid
-
-    @property
-    def alt_key(self) -> str:
-        return f"{_ALT_PREFIX}{self.cid}"
+        return self.cid or self.path.name
 
 
 InlineCidImage = InlinePicture
@@ -134,6 +120,16 @@ def _save_png(raw: bytes, path: Path) -> Path:
     return path
 
 
+def _path_to_file_uri(path: Path) -> str:
+    """file:///C:/... — Word InsertFile hiểu được ảnh local."""
+    abs_path = path.resolve()
+    # Windows: C:\a\b.png → file:///C:/a/b.png
+    as_posix = abs_path.as_posix()
+    if re.match(r"^[A-Za-z]:/", as_posix):
+        return "file:///" + as_posix
+    return abs_path.as_uri()
+
+
 def clear_windows_clipboard() -> None:
     try:
         import win32clipboard  # type: ignore
@@ -160,7 +156,7 @@ def clear_windows_clipboard() -> None:
 
 
 def extract_data_images_as_placeholders(html: str) -> tuple[str, list[InlinePicture]]:
-    """Thay data:image bằng <img src=\"cid:...\"> đúng vị trí (A)."""
+    """Thay data:image bằng <img src=file:///ABS> + danh sách file."""
     if not html or "data:image/" not in html.lower():
         return html or "", []
 
@@ -187,11 +183,13 @@ def extract_data_images_as_placeholders(html: str) -> tuple[str, list[InlinePict
         cid = f"vt.img.{idx}.{uuid.uuid4().hex[:10]}"
         nat_w, nat_h = _image_natural_size(raw)
         width, height = _resolve_display_size(tag, nat_w, nat_h)
-        pic = InlinePicture(path=path, cid=cid, width_px=width, height_px=height)
-        items.append(pic)
+        items.append(
+            InlinePicture(path=path, cid=cid, width_px=width, height_px=height)
+        )
 
+        uri = _path_to_file_uri(path)
         dims = ""
-        style_bits: list[str] = ["border:0"]
+        style_bits = ["border:0"]
         if width:
             dims += f' width="{width}"'
             style_bits.append(f"width:{width}px")
@@ -199,10 +197,8 @@ def extract_data_images_as_placeholders(html: str) -> tuple[str, list[InlinePict
             dims += f' height="{height}"'
             style_bits.append(f"height:{height}px")
         style = ";".join(style_bits)
-        # alt = khóa để Word C tìm đúng shape
         return (
-            f'<img src="cid:{cid}"{dims} alt="{pic.alt_key}" '
-            f'border="0" style="{style}" />'
+            f'<img src="{uri}"{dims} alt="" border="0" style="{style}" />'
         )
 
     return _IMG_TAG_RE.sub(_img_repl, html), items
@@ -212,91 +208,20 @@ def replace_data_images_with_cid(html: str) -> tuple[str, list[InlinePicture]]:
     return extract_data_images_as_placeholders(html)
 
 
-def _normalize_cid(value: str) -> str:
-    return (value or "").strip().strip("<>").lower()
-
-
-def _existing_attach_cids(mail_item: Any) -> set[str]:
-    found: set[str] = set()
-    try:
-        n = int(mail_item.Attachments.Count)
-    except Exception:  # noqa: BLE001
-        return found
-    for i in range(1, n + 1):
-        try:
-            att = mail_item.Attachments.Item(i)
-            pa = getattr(att, "PropertyAccessor", None)
-            if pa is None:
-                continue
-            raw = str(pa.GetProperty(_PR_ATTACH_CONTENT_ID) or "")
-            key = _normalize_cid(raw)
-            if key:
-                found.add(key)
-        except Exception:  # noqa: BLE001
-            continue
-    return found
-
-
-def _set_inline_attach_props(att: Any, cid: str) -> bool:
-    pa = getattr(att, "PropertyAccessor", None)
-    if pa is None:
-        return False
-    cid_ok = False
-    for cid_val in (cid, f"<{cid}>"):
-        try:
-            pa.SetProperty(_PR_ATTACH_CONTENT_ID, cid_val)
-            cid_ok = True
-            break
-        except Exception:  # noqa: BLE001
-            continue
-    if not cid_ok:
-        return False
-    try:
-        pa.SetProperty(_PR_ATTACH_FLAGS, 4)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        pa.SetProperty(_PR_ATTACH_MIME_TAG, "image/png")
-    except Exception:  # noqa: BLE001
-        pass
-    return True
-
-
-def attach_cid_images(mail_item: Any, items: list[InlinePicture]) -> int:
-    """A: đính PNG + Content-ID + ATT_MHTML_REF (không đính trùng cid)."""
-    if not mail_item or not items:
-        return 0
-
-    have = _existing_attach_cids(mail_item)
-    attached = 0
-    for pic in items:
-        if not pic.path.is_file() or pic.path.stat().st_size < 32:
-            continue
-        key = _normalize_cid(pic.cid)
-        if key in have:
-            # Đã có — chỉ khẳng định lại flags
-            try:
-                for i in range(1, int(mail_item.Attachments.Count) + 1):
-                    att = mail_item.Attachments.Item(i)
-                    pa = getattr(att, "PropertyAccessor", None)
-                    if pa is None:
-                        continue
-                    raw = _normalize_cid(str(pa.GetProperty(_PR_ATTACH_CONTENT_ID) or ""))
-                    if raw == key:
-                        _set_inline_attach_props(att, pic.cid)
-                        break
-            except Exception:  # noqa: BLE001
-                pass
-            continue
-        try:
-            att = mail_item.Attachments.Add(str(pic.path.resolve()), 1)  # olByValue
-        except Exception:  # noqa: BLE001
-            continue
-        if _set_inline_attach_props(att, pic.cid):
-            have.add(key)
-            attached += 1
-
-    return attached
+def write_body_htm_for_insert(html: str, pictures: list[InlinePicture]) -> Path:
+    """Ghi .htm đầy đủ để Word InsertFile (ảnh đã là file:/// tuyệt đối)."""
+    store = _inline_store_dir()
+    name = f"vt_body_{uuid.uuid4().hex[:12]}.htm"
+    path = store / name
+    body = (html or "").strip()
+    # Fragment đủ cho Word — tránh wrapper phức tạp làm lệch layout
+    doc = (
+        "<!DOCTYPE html>\n"
+        '<html><head><meta charset="utf-8"></head>'
+        f"<body>{body}</body></html>\n"
+    )
+    path.write_text(doc, encoding="utf-8", errors="replace")
+    return path
 
 
 def _shape_count(word_doc: Any) -> int:
@@ -304,81 +229,6 @@ def _shape_count(word_doc: Any) -> int:
         return int(word_doc.InlineShapes.Count)
     except Exception:  # noqa: BLE001
         return 0
-
-
-def _shape_type(shape: Any) -> int:
-    try:
-        return int(shape.Type)
-    except Exception:  # noqa: BLE001
-        return -1
-
-
-def _apply_size(shape: Any, pic: InlinePicture) -> None:
-    try:
-        shape.LockAspectRatio = -1
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        if pic.width_px and pic.width_px > 0:
-            shape.Width = float(pic.width_px) * 72.0 / 96.0
-        elif pic.height_px and pic.height_px > 0:
-            shape.Height = float(pic.height_px) * 72.0 / 96.0
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        shape.AlternativeText = pic.alt_key
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _force_embed(shape: Any) -> None:
-    """C: ép lưu trong document, cắt link file ngoài."""
-    try:
-        lf = shape.LinkFormat
-        try:
-            lf.SavePictureWithDocument = True
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            lf.BreakLink()
-        except Exception:  # noqa: BLE001
-            pass
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _link_source(shape: Any) -> str:
-    try:
-        return str(shape.LinkFormat.SourceFullName or "").strip()
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def _looks_broken_or_linked(shape: Any) -> bool:
-    t = _shape_type(shape)
-    if t == _WD_INLINE_LINKED_PICTURE:
-        return True
-    if _link_source(shape):
-        return True
-    try:
-        w = float(shape.Width)
-        h = float(shape.Height)
-        if w < 4 or h < 4:
-            return True
-    except Exception:  # noqa: BLE001
-        return True
-    try:
-        sh = float(shape.ScaleHeight)
-        sw = float(shape.ScaleWidth)
-        if sh == 0 and sw == 0:
-            return True
-    except Exception:  # noqa: BLE001
-        return True
-    try:
-        _ = shape.PictureFormat.Brightness
-    except Exception:  # noqa: BLE001
-        return True
-    return False
 
 
 def _signature_start(word_doc: Any) -> Optional[int]:
@@ -395,159 +245,124 @@ def _signature_start(word_doc: Any) -> Optional[int]:
     except Exception:  # noqa: BLE001
         pass
     try:
-        end = int(word_doc.Content.End)
-        return max(0, int(end * 0.65))
+        return max(0, int(int(word_doc.Content.End) * 0.65))
     except Exception:  # noqa: BLE001
         return None
 
 
-def _shape_alt(shape: Any) -> str:
+def _force_embed(shape: Any) -> None:
     try:
-        return str(shape.AlternativeText or "")
+        lf = shape.LinkFormat
+        try:
+            lf.SavePictureWithDocument = True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            lf.BreakLink()
+        except Exception:  # noqa: BLE001
+            pass
     except Exception:  # noqa: BLE001
-        return ""
+        pass
 
 
-def _find_shape_for_pic(word_doc: Any, pic: InlinePicture) -> Any:
-    """Tìm shape theo alt VTIMG:cid — fallback shape body thứ tự."""
-    alt = pic.alt_key
+def _apply_size(shape: Any, pic: InlinePicture) -> None:
+    try:
+        shape.LockAspectRatio = -1
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        if pic.width_px and pic.width_px > 0:
+            shape.Width = float(pic.width_px) * 72.0 / 96.0
+        elif pic.height_px and pic.height_px > 0:
+            shape.Height = float(pic.height_px) * 72.0 / 96.0
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def embed_body_pictures_after_insert(
+    word_doc: Any, pictures: list[InlinePicture]
+) -> int:
+    """Sau InsertFile: BreakLink + chỉnh size ảnh body (không đụng chữ ký)."""
+    if not word_doc:
+        return 0
     sig = _signature_start(word_doc)
-    body: list[Any] = []
+    embedded = 0
+    body_shapes: list[Any] = []
     for i in range(1, _shape_count(word_doc) + 1):
         try:
             s = word_doc.InlineShapes(i)
             st = int(s.Range.Start)
             if sig is not None and st >= sig:
                 continue
-            if _shape_alt(s) == alt or alt in _shape_alt(s):
-                return s
-            body.append(s)
+            body_shapes.append(s)
+            _force_embed(s)
+            embedded += 1
         except Exception:  # noqa: BLE001
             continue
-    return None
+
+    # Size theo thứ tự pictures
+    for s, pic in zip(body_shapes, pictures):
+        _apply_size(s, pic)
+        _force_embed(s)
+
+    return embedded
 
 
-def _body_shapes(word_doc: Any) -> list[Any]:
-    sig = _signature_start(word_doc)
-    out: list[tuple[int, Any]] = []
-    for i in range(1, _shape_count(word_doc) + 1):
-        try:
-            s = word_doc.InlineShapes(i)
-            st = int(s.Range.Start)
-            if sig is not None and st >= sig:
-                continue
-            out.append((st, s))
-        except Exception:  # noqa: BLE001
-            continue
-    out.sort(key=lambda x: x[0])
-    return [s for _st, s in out]
+def insert_body_html_via_word_file(
+    word_doc: Any, body_html: str
+) -> tuple[list[InlinePicture], Optional[Path]]:
+    """
+    Chèn body bằng InsertFile tại đầu document (phía trên chữ ký).
+    Trả về (pictures, htm_path).
+    """
+    if not word_doc:
+        return [], None
 
+    ready, pictures = extract_data_images_as_placeholders(body_html)
+    htm_path = write_body_htm_for_insert(ready, pictures)
 
-def _add_picture_embedded(word_doc: Any, pos: int, pic: InlinePicture) -> bool:
-    if not pic.path.is_file() or pic.path.stat().st_size < 32:
-        return False
     clear_windows_clipboard()
+    abs_htm = str(htm_path.resolve())
     try:
-        r = word_doc.Range(pos, pos)
-        shape = r.InlineShapes.AddPicture(str(pic.path.resolve()), False, True)
-        _force_embed(shape)
-        _apply_size(shape, pic)
-        clear_windows_clipboard()
-        return True
+        # Chèn tại đầu — chữ ký New Mail bị đẩy xuống dưới
+        # InsertFile(FileName, Range/Bookmark, ConfirmConversions, Link, Attachment)
+        rng = word_doc.Range(0, 0)
+        rng.InsertFile(abs_htm, "", False, False, False)
     except Exception:  # noqa: BLE001
-        clear_windows_clipboard()
-        return False
+        try:
+            rng = word_doc.Range(0, 0)
+            rng.InsertFile(abs_htm)
+        except Exception:  # noqa: BLE001
+            try:
+                sel = word_doc.Application.Selection
+                sel.HomeKey(Unit=6)  # wdStory
+                sel.InsertFile(abs_htm)
+            except Exception:  # noqa: BLE001
+                clear_windows_clipboard()
+                return pictures, htm_path
+
+    time.sleep(0.2)
+    if pictures:
+        embed_body_pictures_after_insert(word_doc, pictures)
+    clear_windows_clipboard()
+    return pictures, htm_path
 
 
-def _replace_shape_with_file(word_doc: Any, shape: Any, pic: InlinePicture) -> bool:
-    try:
-        pos = int(shape.Range.Start)
-    except Exception:  # noqa: BLE001
-        return False
-    try:
-        shape.Delete()
-    except Exception:  # noqa: BLE001
-        return False
-    return _add_picture_embedded(word_doc, pos, pic)
+# --- API tương thích cũ (không dùng CID path nữa) ---
+
+
+def attach_cid_images(mail_item: Any, items: list[InlinePicture]) -> int:
+    return 0
 
 
 def repair_broken_images_via_word(
     word_doc: Any, pictures: list[InlinePicture]
 ) -> int:
-    """
-    C: với mỗi ảnh body —
-    1) BreakLink nếu đang link
-    2) Nếu vẫn broken/linked → xóa + AddPicture embed
-    3) Nếu không thấy shape (CID không tạo shape) → bỏ qua (tránh dán nhầm chữ ký)
-       trừ khi có đúng 1 picture và 1 body shape hỏng theo thứ tự
-    """
-    if not word_doc or not pictures:
-        return 0
-
-    clear_windows_clipboard()
-    repaired = 0
-
-    # Pass 1: BreakLink trên shape khớp từng pic (hoặc mọi linked trong body)
-    for pic in pictures:
-        shape = _find_shape_for_pic(word_doc, pic)
-        if shape is not None:
-            _force_embed(shape)
-            try:
-                shape.AlternativeText = pic.alt_key
-            except Exception:  # noqa: BLE001
-                pass
-
-    for s in _body_shapes(word_doc):
-        if _link_source(s) or _shape_type(s) == _WD_INLINE_LINKED_PICTURE:
-            _force_embed(s)
-
-    time.sleep(0.12)
-
-    # Pass 2: thay shape vẫn hỏng
-    used_shape_ids: set[int] = set()
-    for idx, pic in enumerate(pictures):
-        shape = _find_shape_for_pic(word_doc, pic)
-        if shape is None:
-            # Fallback theo thứ tự body
-            body = _body_shapes(word_doc)
-            if idx < len(body):
-                shape = body[idx]
-            else:
-                continue
-
-        try:
-            sid = int(shape.Range.Start)
-        except Exception:  # noqa: BLE001
-            sid = id(shape)
-        if sid in used_shape_ids:
-            continue
-
-        if not _looks_broken_or_linked(shape):
-            # Có thể vẫn là khung đỏ X nhưng Type=Picture — ép embed thêm lần
-            _force_embed(shape)
-            if not _looks_broken_or_linked(shape):
-                used_shape_ids.add(sid)
-                continue
-
-        if _replace_shape_with_file(word_doc, shape, pic):
-            repaired += 1
-            used_shape_ids.add(sid)
-        time.sleep(0.05)
-
-    # Pass 3: body còn shape linked/broken → thay 1-1 theo thứ tự pictures
-    still = [s for s in _body_shapes(word_doc) if _looks_broken_or_linked(s)]
-    if still:
-        for s, pic in zip(still, pictures):
-            if _replace_shape_with_file(word_doc, s, pic):
-                repaired += 1
-            time.sleep(0.05)
-
-    clear_windows_clipboard()
-    return repaired
+    return embed_body_pictures_after_insert(word_doc, pictures)
 
 
 def insert_pictures_via_word(word_doc: Any, pictures: list[InlinePicture]) -> int:
-    return repair_broken_images_via_word(word_doc, pictures)
+    return embed_body_pictures_after_insert(word_doc, pictures)
 
 
 def cleanup_temp_files(items: list[InlinePicture]) -> None:
@@ -555,6 +370,12 @@ def cleanup_temp_files(items: list[InlinePicture]) -> None:
         store = _inline_store_dir()
         now = time.time()
         for p in store.glob("vt_*.png"):
+            try:
+                if now - p.stat().st_mtime > 2 * 3600:
+                    p.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+        for p in store.glob("vt_body_*.htm"):
             try:
                 if now - p.stat().st_mtime > 2 * 3600:
                     p.unlink(missing_ok=True)

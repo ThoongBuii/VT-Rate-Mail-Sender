@@ -1,12 +1,11 @@
 """Windows Outlook send via COM — độc lập hoàn toàn với macOS.
 
-Luồng:
-1) CreateItem + Display = New Mail (Outlook gắn chữ ký + ảnh CID chữ ký)
+Luồng (InsertFile — không gán HTMLBody cho ảnh):
+1) CreateItem + Display = New Mail (chữ ký Outlook nguyên)
 2) To / Cc / Subject
-3) Ảnh body — A rồi C:
-   A) data:image → cid HTML; Attach + Content-ID; rồi mới gán HTMLBody
-   C) WordEditor BreakLink / AddPicture nếu còn khung hỏng (không đụng chữ ký)
-4) Đính file thường → Save → Send
+3) Xóa dòng trống đầu → WordEditor.InsertFile(body.htm + ảnh file:///)
+4) BreakLink ảnh body (embed) — không đụng chữ ký
+5) Đính Excel → Save → Send
 """
 
 from __future__ import annotations
@@ -17,14 +16,11 @@ from typing import Any, Optional, Sequence, Union
 
 from ..models import AppConfig
 from ..outlook_html import prepare_body_html_for_outlook
-from .html_merge import merge_body_with_outlook_signature
 from .inline_images import (
     InlinePicture,
-    attach_cid_images,
     cleanup_temp_files,
     clear_windows_clipboard,
-    extract_data_images_as_placeholders,
-    repair_broken_images_via_word,
+    insert_body_html_via_word_file,
 )
 
 
@@ -47,7 +43,6 @@ class WindowsOutlookSender:
         return None
 
     def _windows_delete_leading_empty_paragraphs(self, word_doc: Any, limit: int = 30) -> int:
-        """Xóa đoạn trống đầu New Mail (thường ~2 dòng trước chữ ký)."""
         removed = 0
         for _ in range(limit):
             try:
@@ -71,7 +66,6 @@ class WindowsOutlookSender:
         return removed
 
     def _windows_trim_gap_before_signature(self, word_doc: Any) -> int:
-        """Xóa đoạn trống ngay trước 'Best Regards' / chữ ký."""
         import re
 
         removed = 0
@@ -125,69 +119,42 @@ class WindowsOutlookSender:
     def _windows_apply_body_keep_signature(
         self, mail_item: Any, body_html: str
     ) -> list[InlinePicture]:
-        """
-        Merge body + chữ ký; ảnh = A (CID) rồi C (repair Word).
-        """
+        """Chèn body bằng InsertFile — giữ nguyên chữ ký WordEditor."""
         word_doc = None
         try:
-            insp = mail_item.GetInspector
-            word_doc = insp.WordEditor
+            word_doc = mail_item.GetInspector.WordEditor
         except Exception:  # noqa: BLE001
             word_doc = None
 
-        if word_doc is not None:
-            self._windows_delete_leading_empty_paragraphs(word_doc)
+        if word_doc is None:
+            # Fallback cực hiếm: không có WordEditor
+            try:
+                mail_item.HTMLBody = body_html + (str(mail_item.HTMLBody or ""))
+            except Exception:  # noqa: BLE001
+                pass
+            return []
 
-        # 1) data:image → <img cid> + file PNG
-        body_ready, pictures = extract_data_images_as_placeholders(body_html)
-        existing = str(getattr(mail_item, "HTMLBody", None) or "")
-        merged = merge_body_with_outlook_signature(body_ready, existing)
+        self._windows_delete_leading_empty_paragraphs(word_doc)
 
+        clear_windows_clipboard()
+        pictures: list[InlinePicture] = []
+        try:
+            time.sleep(0.15)
+            pictures, _htm = insert_body_html_via_word_file(word_doc, body_html)
+            time.sleep(0.2)
+            self._windows_trim_gap_before_signature(word_doc)
+        except Exception:  # noqa: BLE001
+            pass
+        clear_windows_clipboard()
+
+        # Dọn attachment HTML tạm nếu Outlook tự đính
         try:
             for i in range(int(mail_item.Attachments.Count), 0, -1):
                 att = mail_item.Attachments.Item(i)
-                name = str(getattr(att, "FileName", "") or "")
-                if name.lower() in {"vt_body.htm", "vt_body.html"}:
-                    att.Delete()
-        except Exception:  # noqa: BLE001
-            pass
-
-        # 2) A — Attach CID TRƯỚC, rồi mới gán HTMLBody (tránh khung trống sớm)
-        if pictures:
-            try:
-                attach_cid_images(mail_item, pictures)
-                time.sleep(0.15)
-            except Exception:  # noqa: BLE001
-                pass
-
-        try:
-            mail_item.HTMLBody = merged
-            time.sleep(0.2)
-        except Exception:  # noqa: BLE001
-            mail_item.HTMLBody = merged
-
-        # Khẳng định lại Content-ID (không Add trùng) + rebind HTML
-        if pictures:
-            try:
-                attach_cid_images(mail_item, pictures)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                mail_item.HTMLBody = str(mail_item.HTMLBody or "")
-                time.sleep(0.15)
-            except Exception:  # noqa: BLE001
-                pass
-
-        # 3) C — BreakLink / AddPicture nếu còn khung hỏng (không đụng chữ ký)
-        try:
-            clear_windows_clipboard()
-            word_doc = mail_item.GetInspector.WordEditor
-            if word_doc is not None and pictures:
-                time.sleep(0.2)
-                repair_broken_images_via_word(word_doc, pictures)
-            if word_doc is not None:
-                self._windows_trim_gap_before_signature(word_doc)
-            clear_windows_clipboard()
+                name = str(getattr(att, "FileName", "") or "").lower()
+                if name.endswith(".htm") or name.endswith(".html") or name.startswith("vt_body"):
+                    if name.startswith("vt_") or "vt_body" in name:
+                        att.Delete()
         except Exception:  # noqa: BLE001
             pass
 
@@ -201,7 +168,7 @@ class WindowsOutlookSender:
         body_html: str,
         attachment: Optional[Union[Path, Sequence[Path]]] = None,
     ) -> None:
-        """New Mail → body + CID/repair ảnh → Send (chữ ký Outlook nguyên)."""
+        """New Mail → InsertFile body+ảnh → Send (chữ ký Outlook nguyên)."""
         import win32com.client  # type: ignore
 
         if not to_list:
@@ -214,7 +181,7 @@ class WindowsOutlookSender:
         files = self._normalize_attachments(attachment)
         outlook = win32com.client.Dispatch("Outlook.Application")
         account = self._windows_pick_account(outlook)
-        mail_item = outlook.CreateItem(0)  # olMailItem
+        mail_item = outlook.CreateItem(0)
         pictures: list[InlinePicture] = []
 
         try:
@@ -235,7 +202,7 @@ class WindowsOutlookSender:
 
             try:
                 mail_item.Display(False)
-                time.sleep(0.45)
+                time.sleep(0.5)
             except Exception:  # noqa: BLE001
                 pass
 
