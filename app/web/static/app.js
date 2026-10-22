@@ -687,13 +687,15 @@ function applyState(s, forceHtml = false) {
   }
   const btnSig = document.getElementById("btnCaptureSig");
   if (btnSig) {
+    // Mac: nút dự phòng (tuỳ chọn). Windows: ẩn — chữ ký New Mail tự gắn.
     const isMac = s.platform === "Darwin";
     btnSig.hidden = !isMac;
     if (isMac) {
-      btnSig.textContent = s.mac_signature_ready
-        ? "Lấy lại chữ ký chuẩn"
-        : "Lấy chữ ký chuẩn (1 lần)";
-      btnSig.title = s.mac_signature_message || "";
+      const cached = !!(s.mac_signature_cached || s.mac_signature_has_file);
+      btnSig.textContent = cached ? "Chữ ký dự phòng ✓" : "Chữ ký dự phòng";
+      btnSig.title =
+        s.mac_signature_message ||
+        "Tuỳ chọn: cache chữ ký nếu New Mail không lấy được chữ ký sống";
     }
   }
   if (forceHtml || !getComposeHtml()) {
@@ -833,17 +835,18 @@ document.getElementById("btnOutlook").onclick = async () => {
 
 document.getElementById("btnCaptureSig").onclick = async () => {
   try {
-    alert(
-      "Lấy chữ ký chuẩn (1 lần) — app sẽ:\n" +
-        "1) Mở New Mail Outlook (chữ ký gốc)\n" +
-        "2) Tự Cmd+A → Cmd+C (không cần bạn bôi đen nếu Accessibility OK)\n" +
-        "3) Lưu chữ ký + logo\n\n" +
-        "Nếu báo lỗi Clipboard: cửa sổ [VT-SIG] vẫn mở → bạn click thân thư → Cmd+A → Cmd+C → bấm lại nút này.\n" +
+    const ok = confirm(
+      "Chữ ký dự phòng (tuỳ chọn) — chỉ khi New Mail không lấy được chữ ký sống:\n" +
+        "1) Mở New Mail Outlook\n" +
+        "2) Copy thân thư (chữ ký + logo)\n" +
+        "3) Lưu cache\n\n" +
+        "Semi-Auto bình thường không cần bước này (giống Windows).\n" +
         "Cần: Legacy Outlook = ON."
     );
+    if (!ok) return;
     const res = await api("/api/outlook/capture-signature", { method: "POST" });
     await refreshState(true);
-    alert(res.message || "Đã lưu chữ ký chuẩn");
+    alert(res.message || "Đã lưu chữ ký dự phòng");
   } catch (e) {
     alert(e.message);
   }
@@ -1057,14 +1060,6 @@ document.getElementById("btnStart").onclick = async () => {
     };
     if (!getComposeHtml().trim()) {
       alert("Chưa có nội dung mail. Hãy soạn hoặc Ctrl+V từ Outlook vào khung soạn.");
-      return;
-    }
-    if (state?.platform === "Darwin" && !state.mac_signature_ready) {
-      alert(
-        "macOS: chưa lấy chữ ký chuẩn.\n" +
-          "Legacy Outlook = ON → «Lấy chữ ký chuẩn (1 lần)» → rồi Semi-Auto.\n" +
-          "(Giống Windows: chữ ký lấy từ Outlook, gửi bằng set content.)"
-      );
       return;
     }
     if (!confirm(`Đã kiểm tra Preview?\nGửi Semi-Auto · Delay ${payload.delay_min}–${payload.delay_max}s`))

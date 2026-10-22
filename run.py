@@ -91,12 +91,15 @@ def _start_webview(url: str) -> None:
     if sys.platform == "win32":
         start_kwargs["gui"] = "edgechromium"
 
+    # 1 khung cố định (Mac + Windows) — resize được, không mở tab trình duyệt
     window = webview.create_window(
         "VT Rate Mail Sender",
         url,
         width=1320,
         height=860,
-        min_size=(1050, 700),
+        min_size=(1100, 720),
+        resizable=True,
+        text_select=True,
     )
 
     def _on_closed() -> None:

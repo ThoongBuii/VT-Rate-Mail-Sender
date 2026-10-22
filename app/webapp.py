@@ -224,6 +224,8 @@ class AppState:
             "outlook_account": self.sender.account_email,
             "platform": platform.system(),
             "mac_signature_ready": bool(mac_sig.get("ready")),
+            "mac_signature_cached": bool(mac_sig.get("cached") or mac_sig.get("has_file")),
+            "mac_signature_has_file": bool(mac_sig.get("has_file")),
             "mac_signature_message": mac_sig.get("message") or "",
             "subject": self.subject,
             "attachment": self.attachment,
