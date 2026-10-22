@@ -4,7 +4,7 @@ Luồng ổn định (giống gửi tay về chữ ký + ảnh):
 1) CreateItem + Display = New Mail (Outlook tự gắn chữ ký + ảnh CID chữ ký)
 2) Điền To / Cc / Subject qua COM
 3) Merge body HTML phía trên chữ ký (giữ nguyên chữ ký Outlook)
-4) Ảnh trong body: WordEditor InlineShapes.AddPicture (giống paste tay — tỉ lệ đúng)
+4) Ảnh trong body: marker tại chỗ → Clipboard CF_DIB + Range.Paste đè marker
 5) Đính file thường (nếu có) → Send
 """
 
@@ -125,7 +125,7 @@ class WindowsOutlookSender:
     ) -> list[InlinePicture]:
         """
         Chèn nội dung HTML phía trên chữ ký Outlook (không đụng chữ ký).
-        Ảnh: placeholder → WordEditor AddPicture (inline như paste tay).
+        Ảnh: marker đúng chỗ trong HTML → Paste đè marker (không dồn xuống cuối).
         """
         word_doc = None
         try:
@@ -137,7 +137,7 @@ class WindowsOutlookSender:
         if word_doc is not None:
             self._windows_delete_leading_empty_paragraphs(word_doc)
 
-        # 1) data:image → marker + file tạm
+        # 1) data:image → marker đúng vị trí ảnh + file PNG tạm
         body_ready, pictures = extract_data_images_as_placeholders(body_html)
         existing = str(getattr(mail_item, "HTMLBody", None) or "")
         # 2) Merge body + chữ ký Outlook (không đụng chữ ký)
@@ -152,12 +152,12 @@ class WindowsOutlookSender:
         except Exception:  # noqa: BLE001
             pass
 
-        # 3) Chèn ảnh Word 1 lần — clear clipboard tránh paste đôi từ clip Soạn
+        # 3) Paste ảnh đè từng marker — clear clipboard trước/sau
         try:
             clear_windows_clipboard()
             word_doc = mail_item.GetInspector.WordEditor
             if word_doc is not None and pictures:
-                time.sleep(0.2)
+                time.sleep(0.25)
                 insert_pictures_via_word(word_doc, pictures)
             if word_doc is not None:
                 self._windows_trim_gap_before_signature(word_doc)

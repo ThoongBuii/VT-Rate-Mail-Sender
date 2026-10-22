@@ -16,6 +16,7 @@ attachments/*
 !samples/*.xlsx
 build/
 dist/
+inline_send/
 *.spec.bak
 packaging/icons/app.iconset/
 .idea/
