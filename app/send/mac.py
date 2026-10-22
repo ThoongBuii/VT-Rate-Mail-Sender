@@ -1,14 +1,15 @@
-"""macOS Outlook — sát Windows: New Mail → chèn body phía trên chữ ký → Send.
+"""macOS Outlook — sát Windows InsertFile: New Mail → paste body → Send.
 
-Windows: Display New Mail (chữ ký gốc) → InsertFile body → Send.
-Mac (không COM WordEditor):
-1) make new outgoing message → Outlook gắn chữ ký gốc
-2) đọc content (chữ ký sống) → merge body app phía trên
-3) set content → attach → send
-4) trả focus app đang làm (giảm cướp cửa sổ)
+Windows: Display New Mail → WordEditor.InsertFile → Send.
+Mac Legacy (không COM WordEditor):
+1) Ghi body HTML lên clipboard
+2) New Mail (chữ ký Outlook gốc) — subject tạm [VT-xxxxxxxx]
+3) Paste Cmd+V vào đầu thân thư (phía trên chữ ký) — gần paste tay
+4) Đặt subject/To/Cc/đính kèm → Send
+5) Dọn draft VT còn sót → trả focus
 
-Nút «Chữ ký Outlook» chỉ còn dự phòng (cache) nếu đọc chữ ký sống thất bại.
-Legacy Outlook = ON.
+Mỗi mail một token riêng (tránh lỗi chỉ gửi được 1 mail do tìm nhầm draft).
+Legacy Outlook = ON · Accessibility cho bước paste.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import re
 import subprocess
 import tempfile
 import time
+import uuid
 from ctypes import c_bool, c_void_p, cdll
 from pathlib import Path
 from typing import Any, Optional
@@ -432,6 +434,68 @@ end tell
             return [p for p in attachment if p is not None]
         return []
 
+    def _close_vt_send_drafts(self, token: str = "") -> None:
+        """Đóng/xóa draft [VT-…] còn sót — tránh mail 2+ tìm nhầm draft cũ."""
+        try:
+            if token:
+                cond = f'(subject of m as string) contains "{_esc(token)}"'
+            else:
+                cond = '(subject of m as string) starts with "[VT-"'
+            _run_osascript_file(
+                f'''
+tell application "Microsoft Outlook"
+  try
+    repeat with m in (get outgoing messages)
+      try
+        if {cond} then
+          try
+            delete m
+          end try
+        end if
+      end try
+    end repeat
+  end try
+end tell
+''',
+                timeout=60,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _paste_body_into_compose(self, *, y_ratio: float = 0.42) -> None:
+        """
+        Click thân thư (phía trên chữ ký) → về đầu → Cmd+V.
+        Tương đương InsertFile/paste tay trên Windows WordEditor.
+        """
+        script = f'''
+tell application "Microsoft Outlook" to activate
+delay 0.4
+tell application "System Events"
+  tell process "Microsoft Outlook"
+    set frontmost to true
+    delay 0.25
+    set win to front window
+    set {{wx, wy}} to position of win
+    set {{ww, wh}} to size of win
+    set clickX to (wx + (ww / 2)) as integer
+    set clickY to (wy + (wh * {y_ratio})) as integer
+    click at {{clickX, clickY}}
+    delay 0.2
+    key code 53
+    delay 0.1
+    click at {{clickX, clickY}}
+    delay 0.2
+    -- Đầu nội dung (trên chữ ký)
+    key code 126 using {{command down}}
+    delay 0.15
+    keystroke "v" using {{command down}}
+    delay 0.8
+  end tell
+end tell
+return "ok"
+'''
+        _run_nsapplescript(script)
+
     def send(
         self,
         to_list: list[str],
@@ -441,9 +505,11 @@ end tell
         attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
-        Giống Windows:
-        New Mail (chữ ký Outlook sống) → merge body phía trên → set content → Send.
+        New Mail + paste body (gần InsertFile Windows).
+        Mỗi lần gửi dùng token riêng — sửa lỗi chỉ gửi được 1 mail.
         """
+        from ..clipboard_html import set_mac_clipboard_html
+
         prepared = prepare_body_html_for_outlook(body_html)
         if not (prepared or "").strip():
             raise ValueError("Nội dung mail trống — không gửi.")
@@ -452,6 +518,14 @@ end tell
 
         files = self._normalize_files(attachment)
         prev_app = _frontmost_app_name()
+        token = f"[VT-{uuid.uuid4().hex[:8]}]"
+        temp_subject = f"{token} {subject}"[:200]
+
+        if not ensure_assistive_access(prompt=True):
+            raise RuntimeError(
+                "Cần Accessibility để paste vào New Mail (giống InsertFile Windows).\n"
+                "System Settings → Privacy & Security → Accessibility → bật «VT Rate Mail Sender»."
+            )
 
         to_block = "\n".join(
             f'  make new to recipient at msg with properties {{email address:{{address:"{_esc(t)}"}}}}'
@@ -466,14 +540,20 @@ end tell
             for p in files
         )
 
-        cache_sig = self.load_signature_html()
+        # Dọn draft VT cũ trước mỗi lần gửi
+        self._close_vt_send_drafts()
 
-        # 1) New Mail + chữ ký sống (giống Display Windows) — lấy content về Python
+        # Clipboard = body only (không merge chữ ký — chữ ký giữ từ New Mail)
+        try:
+            set_mac_clipboard_html(prepared)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Không ghi HTML lên clipboard: {exc}") from exc
+
         create_script = f'''
 tell application "Microsoft Outlook"
   set msg to make new outgoing message
 {_account_block(self.config.from_email)}
-  set subject of msg to "{_esc(subject)}"
+  set subject of msg to "{_esc(temp_subject)}"
 {to_block}
 {cc_block}
   try
@@ -488,62 +568,110 @@ tell application "Microsoft Outlook"
     if (count of signatures) > 0 then set signature of msg to item 1 of signatures
   end try
   open msg
-  delay 1.2
+  delay 1.0
+end tell
+return "ok"
+'''
+        try:
+            try:
+                _run_nsapplescript(create_script)
+            except Exception:  # noqa: BLE001
+                _run_osascript_file(create_script, timeout=120)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Outlook Mac không tạo được New Mail.\n"
+                f"{exc}\n"
+                "Legacy Outlook = ON · đã đăng nhập."
+            ) from exc
+
+        # Paste body vào đầu thư (trên chữ ký)
+        paste_ok = False
+        last_paste_err: Optional[Exception] = None
+        for ratio in (0.40, 0.48, 0.35, 0.55):
+            try:
+                self._paste_body_into_compose(y_ratio=ratio)
+                paste_ok = True
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_paste_err = exc
+                time.sleep(0.2)
+
+        if not paste_ok:
+            # Fallback: merge + set content (kém giống paste hơn nhưng vẫn gửi được)
+            cache_sig = self.load_signature_html()
+            try:
+                live = _run_osascript_file(
+                    f'''
+tell application "Microsoft Outlook"
+  set msg to missing value
+  repeat with m in (get outgoing messages)
+    try
+      if (subject of m as string) contains "{_esc(token)}" then
+        set msg to m
+        exit repeat
+      end if
+    end try
+  end repeat
+  if msg is missing value then error "Không tìm thấy draft {token}"
   set sigHtml to ""
   try
     set sigHtml to content of msg as string
   end try
   return sigHtml
 end tell
-'''
-        try:
-            live_sig = _run_nsapplescript(create_script)
-        except Exception:  # noqa: BLE001
-            try:
-                live_sig = _run_osascript_file(create_script, timeout=120)
-            except RuntimeError as exc:
-                raise RuntimeError(
-                    "Outlook Mac không tạo được New Mail.\n"
-                    f"{exc}\n"
-                    "Legacy Outlook = ON · đã đăng nhập."
-                ) from exc
-
-        sig_html = live_sig or ""
-        if len(html_visible_text(sig_html)) < 15 and cache_sig:
-            sig_html = cache_sig
-
-        full = merge_body_with_outlook_signature(prepared, sig_html)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            full_path = Path(tmp) / "full.html"
-            full_path.write_text(full, encoding="utf-8")
-
-            send_script = f'''
+''',
+                    timeout=60,
+                )
+            except Exception:  # noqa: BLE001
+                live = ""
+            sig_html = live if len(html_visible_text(live or "")) >= 15 else cache_sig
+            full = merge_body_with_outlook_signature(prepared, sig_html or "")
+            with tempfile.TemporaryDirectory() as tmp:
+                full_path = Path(tmp) / "full.html"
+                full_path.write_text(full, encoding="utf-8")
+                try:
+                    _run_osascript_file(
+                        f'''
 set fullPath to "{full_path}"
 set fullText to do shell script "cat " & quoted form of fullPath
-if fullText is "" then error "HTML trống"
-
 tell application "Microsoft Outlook"
   set msg to missing value
-  try
-    repeat with m in (get outgoing messages)
-      try
-        if (subject of m as string) is "{_esc(subject)}" then
-          set msg to m
-          exit repeat
-        end if
-      end try
-    end repeat
-  end try
-  if msg is missing value then
-    set msg to make new outgoing message
-{_account_block(self.config.from_email)}
-    set subject of msg to "{_esc(subject)}"
-{to_block}
-{cc_block}
-  end if
-
+  repeat with m in (get outgoing messages)
+    try
+      if (subject of m as string) contains "{_esc(token)}" then
+        set msg to m
+        exit repeat
+      end if
+    end try
+  end repeat
+  if msg is missing value then error "Không tìm thấy draft"
   set content of msg to fullText
+end tell
+''',
+                        timeout=120,
+                    )
+                except RuntimeError as exc:
+                    self._close_vt_send_drafts(token)
+                    raise RuntimeError(
+                        "Paste vào New Mail thất bại và fallback set content cũng lỗi.\n"
+                        f"Paste: {last_paste_err}\nFallback: {exc}"
+                    ) from exc
+
+        # Subject thật + đính kèm + Send — chỉ đúng draft token này
+        finish_script = f'''
+tell application "Microsoft Outlook"
+  set msg to missing value
+  repeat with m in (get outgoing messages)
+    try
+      if (subject of m as string) contains "{_esc(token)}" then
+        set msg to m
+        exit repeat
+      end if
+    end try
+  end repeat
+  if msg is missing value then error "Không tìm thấy draft {token} để gửi"
+
+  set subject of msg to "{_esc(subject)}"
 {att_block}
   set toCount to 0
   try
@@ -560,14 +688,16 @@ tell application "Microsoft Outlook"
   send msg
 end tell
 '''
-            try:
-                _run_osascript_file(send_script, timeout=180)
-            except RuntimeError as exc:
-                raise RuntimeError(
-                    "Outlook Mac gửi thất bại.\n"
-                    f"{exc}\n"
-                    "Legacy Outlook = ON · thử 1 mail."
-                ) from exc
+        try:
+            _run_osascript_file(finish_script, timeout=180)
+        except RuntimeError as exc:
+            self._close_vt_send_drafts(token)
+            raise RuntimeError(
+                "Outlook Mac gửi thất bại.\n"
+                f"{exc}\n"
+                "Legacy Outlook = ON · Accessibility ON · thử lại."
+            ) from exc
 
-        time.sleep(0.15)
+        time.sleep(0.35)
+        self._close_vt_send_drafts(token)
         _activate_app(prev_app)

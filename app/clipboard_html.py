@@ -390,6 +390,47 @@ def embed_local_and_cid_images(html: str, cid_map: Optional[dict[str, str]] = No
     return re.sub(r"""src\s*=\s*["']([^"']+)["']""", _repl, html, flags=re.I)
 
 
+def set_mac_clipboard_html(html: str) -> None:
+    """Ghi HTML lên clipboard macOS (để paste vào New Mail — gần InsertFile Windows)."""
+    if platform.system() != "Darwin":
+        raise RuntimeError("set_mac_clipboard_html chỉ dùng trên macOS.")
+    fragment = (html or "").strip()
+    if not fragment:
+        raise ValueError("HTML clipboard trống.")
+    try:
+        from AppKit import NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeString  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("Thiếu PyObjC AppKit để ghi clipboard.") from exc
+
+    # CF_HTML-like wrapper giúp Outlook giữ format tốt hơn
+    if "<html" not in fragment.lower():
+        wrapped = (
+            "<!DOCTYPE html><html><body>"
+            f"{fragment}"
+            "</body></html>"
+        )
+    else:
+        wrapped = fragment
+
+    pb = NSPasteboard.generalPasteboard()
+    pb.clearContents()
+    ok = pb.setString_forType_(wrapped, NSPasteboardTypeHTML)
+    if not ok:
+        try:
+            pb.setString_forType_(wrapped, "public.html")
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Không set NSPasteboardTypeHTML: {exc}") from exc
+    try:
+        pb.setString_forType_(wrapped, "public.html")
+    except Exception:  # noqa: BLE001
+        pass
+    plain = re.sub(r"(?is)<br\s*/?>", "\n", fragment)
+    plain = re.sub(r"(?is)<[^>]+>", "", plain)
+    plain = html_lib.unescape(plain).strip()
+    if plain:
+        pb.setString_forType_(plain, NSPasteboardTypeString)
+
+
 def clipboard_html_for_compose(browser_html: str = "") -> str:
     """
     Windows: CF_HTML. macOS: WebArchive/HTML AppKit.
