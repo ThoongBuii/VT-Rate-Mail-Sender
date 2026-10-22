@@ -690,25 +690,13 @@ function updateAxBanner(s) {
 }
 
 async function ensureMacAccessibilityOnce(s) {
+  // Semi-Auto Mac không bắt buộc Accessibility — chỉ hiện banner gợi ý, không ép dialog
   if (!s || s.platform !== "Darwin") return;
-  if (s.accessibility_trusted) {
-    updateAxBanner(s);
-    return;
-  }
-  updateAxBanner(s);
-  if (axPromptedThisSession) return;
+  updateAxBanner({
+    ...s,
+    accessibility_needed: false, // gửi không cần AX
+  });
   axPromptedThisSession = true;
-  try {
-    const st = await api("/api/accessibility/ensure", { method: "POST" });
-    updateAxBanner({
-      ...s,
-      accessibility_trusted: !!st.trusted,
-      accessibility_needed: !!st.needed,
-      accessibility_message: st.message || "",
-    });
-  } catch (_) {
-    /* banner vẫn hiện */
-  }
 }
 
 function applyState(s, forceHtml = false) {
@@ -732,10 +720,10 @@ function applyState(s, forceHtml = false) {
     btnSig.hidden = !isMac;
     if (isMac) {
       const cached = !!(s.mac_signature_cached || s.mac_signature_has_file);
-      btnSig.textContent = cached ? "Chữ ký dự phòng ✓" : "Chữ ký dự phòng";
+      btnSig.textContent = cached ? "Cache chữ ký (không dùng) ✓" : "Cache chữ ký (không cần)";
       btnSig.title =
         s.mac_signature_message ||
-        "Tuỳ chọn: cache chữ ký nếu New Mail không lấy được chữ ký sống";
+        "Không cần: Semi-Auto dùng chữ ký Outlook gốc (tránh banner external images)";
     }
   }
   if (forceHtml || !getComposeHtml()) {
