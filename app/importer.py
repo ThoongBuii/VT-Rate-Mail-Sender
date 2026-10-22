@@ -45,6 +45,16 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "cc mail",
         "email cc",
     ),
+    "country": (
+        "country",
+        "quốc gia",
+        "quoc gia",
+        "nation",
+        "region",
+        "thị trường",
+        "thi truong",
+        "market",
+    ),
     # Optional legacy columns (ignored if compose UI is used)
     "subject": ("subject", "tiêu đề", "tieu de"),
     "attachment": (
@@ -149,22 +159,27 @@ def import_agencies(path: str | Path) -> list[AgencyMail]:
 
 
 def export_sample_excel(path: str | Path) -> Path:
-    """Excel chỉ 4 cột danh bạ — Subject/Attachment/Template soạn trên app."""
+    """Excel mẫu: mỗi sheet = 1 country (hoặc thêm cột Country)."""
     path = Path(path)
     wb = Workbook()
-    ws = wb.active
-    ws.title = "Agencies"
     headers = ["Agency Company", "Account Name", "Account Mail", "Mail cc"]
+
+    ws = wb.active
+    ws.title = "Mexico"
     ws.append(headers)
     ws.append(["VT Internal TEST", "Amber", "your.email@company.com", ""])
-    ws.append(["ABC Logistics Co., Ltd", "Nguyen Van A", "vana@abclogistics.com", "ops@abclogistics.com"])
-    ws.append(["Global Freight Partners", "Tran Thi B", "thib@gfp.com", ""])
+    ws.append(["ABC Logistics MX", "Nguyen Van A", "vana@abclogistics.com", "ops@abclogistics.com"])
+
+    ws2 = wb.create_sheet("USA")
+    ws2.append(headers)
+    ws2.append(["Global Freight USA", "Tran Thi B", "thib@gfp.com", ""])
 
     guide = wb.create_sheet("HUONG_DAN")
     guide.append(["Hướng dẫn"])
-    guide.append(["1", "Excel chỉ cần 4 cột: Company / Account Name / Account Mail / Mail cc"])
-    guide.append(["2", "Subject, Attachment, Template Mail — soạn trên giao diện app"])
-    guide.append(["3", "Sửa Account Mail dòng test thành email của bạn trước khi gửi thử"])
+    guide.append(["1", "Mỗi sheet = 1 Country (vd Mexico, USA) — app lưu thư viện + chọn Country"])
+    guide.append(["2", "Hoặc 1 sheet + cột Country"])
+    guide.append(["3", "Cột: Company / Account Name / Account Mail / Mail cc"])
+    guide.append(["4", "Subject & nội dung soạn trên app"])
 
     fill = PatternFill("solid", fgColor="0F2C4C")
     font = Font(color="FFFFFF", bold=True)

@@ -144,6 +144,25 @@ def strip_trailing_empty_blocks(html: str) -> str:
     return s
 
 
+def harden_images_for_outlook(html: str) -> str:
+    """Bỏ max-width:100% trên img — Outlook hay thu nhỏ ảnh vì CSS này."""
+
+    def _img_repl(m: re.Match[str]) -> str:
+        open_tag, attrs, close = m.group(1), m.group(2), m.group(3)
+        style_m = re.search(r"""(?is)\sstyle\s*=\s*["']([^"']*)["']""", attrs)
+        if style_m:
+            style = style_m.group(1)
+            style = re.sub(r"(?i)(?:^|;)\s*max-width\s*:\s*100%\s*;?", ";", style)
+            style = re.sub(r";{2,}", ";", style).strip("; ").strip()
+            if style:
+                attrs = attrs[: style_m.start()] + f' style="{style}"' + attrs[style_m.end() :]
+            else:
+                attrs = attrs[: style_m.start()] + attrs[style_m.end() :]
+        return f"{open_tag}{attrs}{close}"
+
+    return re.sub(r"(?is)(<img\b)([^>]*?)(/?>)", _img_repl, html or "")
+
+
 def prepare_body_html_for_outlook(html: str) -> str:
     """Pipeline trước khi chèn vào New Mail Outlook."""
     s = (html or "").strip()
@@ -151,6 +170,7 @@ def prepare_body_html_for_outlook(html: str) -> str:
         return s
     s = convert_px_font_sizes_to_pt(s)
     s = harden_tables_for_outlook(s)
+    s = harden_images_for_outlook(s)
     s = ensure_inline_fonts(s)
     s = strip_trailing_empty_blocks(s)
     s = wrap_root_body(s)

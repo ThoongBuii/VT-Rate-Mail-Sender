@@ -68,6 +68,18 @@ function normalizeHtmlForOutlook(html) {
     if (next !== s) el.setAttribute("style", next);
   });
 
+  // Ảnh: bỏ max-width:100% (Outlook hay thu nhỏ); giữ width/height px nếu có
+  box.querySelectorAll("img").forEach((img) => {
+    let style = img.getAttribute("style") || "";
+    style = style.replace(/max-width\s*:\s*100%\s*;?/gi, "").trim();
+    const wAttr = img.getAttribute("width");
+    const hAttr = img.getAttribute("height");
+    if (wAttr && !/width\s*:/i.test(style)) style = `${style};width:${wAttr}px`.replace(/^;/, "");
+    if (hAttr && !/height\s*:/i.test(style)) style = `${style};height:${hAttr}px`.replace(/^;/, "");
+    if (style) img.setAttribute("style", style);
+    else img.removeAttribute("style");
+  });
+
   let root = box.firstElementChild;
   if (root && root.tagName === "DIV" && box.childNodes.length === 1) {
     root.setAttribute("data-vt-body", "1");
@@ -408,11 +420,43 @@ function setView(view) {
   }
 }
 
+function renderCountrySelect() {
+  const sel = document.getElementById("countrySelect");
+  const hint = document.getElementById("libraryHint");
+  if (!sel) return;
+  const lib = state?.library || {};
+  const countries = lib.countries || [];
+  const active = state?.active_country || lib.active_country || "";
+  const prev = sel.value;
+  sel.innerHTML = "";
+  if (!countries.length) {
+    sel.innerHTML = `<option value="">— Chưa có —</option>`;
+  } else {
+    countries.forEach((c) => {
+      const n = (lib.counts && lib.counts[c]) || "";
+      const opt = document.createElement("option");
+      opt.value = c;
+      opt.textContent = n ? `${c} (${n})` : c;
+      if (c === active) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    if (!active && prev && countries.includes(prev)) sel.value = prev;
+  }
+  if (hint) {
+    hint.textContent = lib.source_name
+      ? `Thư viện: ${lib.source_name}`
+      : "Nạp Excel 1 lần (mỗi sheet = 1 country) → chọn Country.";
+  }
+}
+
+let dragFromIndex = null;
+
 function renderList() {
   const box = document.getElementById("mailList");
   box.innerHTML = "";
+  renderCountrySelect();
   if (!state || !state.mails.length) {
-    box.innerHTML = `<div class="mail-item"><div class="meta"><div class="company">Chưa có dữ liệu</div></div></div>`;
+    box.innerHTML = `<div class="mail-item"><div class="meta"><div class="company">Chưa có agency — chọn Country hoặc + Thêm</div></div></div>`;
     return;
   }
   state.mails.forEach((m, i) => {
@@ -420,14 +464,75 @@ function renderList() {
       currentView === "preview" ? i === previewIndex : i === state.selected_index;
     const el = document.createElement("div");
     el.className = "mail-item" + (active ? " active" : "");
+    el.draggable = true;
+    el.dataset.index = String(i);
     el.innerHTML = `
+      <div class="drag" title="Kéo thả đổi thứ tự">⋮⋮</div>
       <div class="idx">${i + 1}</div>
       <div class="meta">
         <div class="company">${escapeHtml(m.agency_company || "(no company)")}</div>
         <div class="email">${escapeHtml(m.account_mail || "")}</div>
       </div>
-      <div class="st st-${m.status}">${m.status}</div>`;
-    el.onclick = () => selectMail(i);
+      <div class="right">
+        <div class="st st-${m.status}">${m.status}</div>
+        <button type="button" class="btn-del" title="Xóa" data-del="${i}">×</button>
+      </div>`;
+    el.onclick = (ev) => {
+      if (ev.target.closest("[data-del]") || ev.target.closest(".drag")) return;
+      selectMail(i);
+    };
+    el.querySelector("[data-del]").onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!confirm(`Xóa agency?\n${m.agency_company || ""}\n${m.account_mail || ""}`)) return;
+      try {
+        const res = await api("/api/mails/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ index: i }),
+        });
+        applyState(res.state);
+        if (currentView === "preview") await loadPreview(Math.min(i, Math.max(0, res.state.mails.length - 1)));
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+    el.addEventListener("dragstart", (ev) => {
+      dragFromIndex = i;
+      el.classList.add("dragging");
+      try {
+        ev.dataTransfer.setData("text/plain", String(i));
+        ev.dataTransfer.effectAllowed = "move";
+      } catch (_) {}
+    });
+    el.addEventListener("dragend", () => {
+      el.classList.remove("dragging");
+      dragFromIndex = null;
+    });
+    el.addEventListener("dragover", (ev) => {
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = "move";
+    });
+    el.addEventListener("drop", async (ev) => {
+      ev.preventDefault();
+      const from = dragFromIndex;
+      const to = i;
+      if (from == null || from === to) return;
+      const order = state.mails.map((_, idx) => idx);
+      const [moved] = order.splice(from, 1);
+      order.splice(to, 0, moved);
+      try {
+        const res = await api("/api/mails/reorder", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ order }),
+        });
+        applyState(res.state);
+        previewIndex = to;
+        if (currentView === "preview") await loadPreview(to);
+      } catch (e) {
+        alert(e.message);
+      }
+    });
     box.appendChild(el);
   });
 }
@@ -510,13 +615,34 @@ function readFileAsDataUrl(file) {
   });
 }
 
+function loadImageSize(uri) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ w: img.naturalWidth || 0, h: img.naturalHeight || 0 });
+    img.onerror = () => resolve({ w: 0, h: 0 });
+    img.src = uri;
+  });
+}
+
 async function insertImagesFromFiles(files) {
+  const MAX_W = 650;
   for (const file of files) {
     if (!file.type.startsWith("image/")) continue;
     const uri = await readFileAsDataUrl(file);
     if (!uri) continue;
+    const { w, h } = await loadImageSize(uri);
+    let width = w;
+    let height = h;
+    if (width > MAX_W && width > 0) {
+      height = Math.max(1, Math.round((MAX_W * height) / width));
+      width = MAX_W;
+    }
+    const sizeAttrs =
+      width && height
+        ? ` width="${width}" height="${height}" style="width:${width}px;height:${height}px;"`
+        : ` style="height:auto;"`;
     insertHtmlAtCursor(
-      `<p style="margin:0 0 0.6em;"><img src="${uri}" alt="${escapeHtml(file.name || "image")}" style="max-width:100%;height:auto;" /></p>`
+      `<p style="margin:0 0 0.6em;"><img src="${uri}" alt="${escapeHtml(file.name || "image")}"${sizeAttrs} /></p>`
     );
   }
   scheduleSaveCompose();
@@ -821,13 +947,75 @@ document.getElementById("fileImport").onchange = async (ev) => {
     const res = await api("/api/import", { method: "POST", body: fd });
     previewIndex = 0;
     applyState(res.state, true);
-    alert(`Đã nạp ${res.count} agency`);
+    const countries = (res.countries || []).join(", ") || res.active_country || "";
+    alert(
+      `Đã lưu thư viện agency.\n` +
+        `Country: ${countries}\n` +
+        `Đang mở: ${res.active_country || ""} · ${res.count} agency`
+    );
   } catch (e) {
     alert(e.message);
   } finally {
     ev.target.value = "";
   }
 };
+
+document.getElementById("countrySelect").onchange = async (ev) => {
+  const country = ev.target.value;
+  if (!country) return;
+  try {
+    await saveCompose();
+    const res = await api("/api/library/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ country }),
+    });
+    previewIndex = 0;
+    applyState(res.state, true);
+    if (currentView === "preview") await loadPreview(0);
+  } catch (e) {
+    alert(e.message);
+    renderCountrySelect();
+  }
+};
+
+document.getElementById("btnAddAgency").onclick = () => {
+  const dlg = document.getElementById("agencyDialog");
+  document.getElementById("agencyDialogTitle").textContent = "Thêm agency";
+  document.getElementById("dlgCompany").value = "";
+  document.getElementById("dlgName").value = "";
+  document.getElementById("dlgMail").value = "";
+  document.getElementById("dlgCc").value = "";
+  if (typeof dlg.showModal === "function") dlg.showModal();
+  else alert("Trình duyệt không hỗ trợ dialog.");
+};
+
+document.getElementById("btnAgencyCancel").onclick = () => {
+  document.getElementById("agencyDialog").close();
+};
+
+document.getElementById("agencyForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const dlg = document.getElementById("agencyDialog");
+  try {
+    const res = await api("/api/mails/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agency_company: document.getElementById("dlgCompany").value,
+        account_name: document.getElementById("dlgName").value,
+        account_mail: document.getElementById("dlgMail").value,
+        mail_cc: document.getElementById("dlgCc").value,
+      }),
+    });
+    applyState(res.state);
+    previewIndex = res.index ?? res.state.selected_index ?? 0;
+    if (currentView === "preview") await loadPreview(previewIndex);
+    dlg.close();
+  } catch (e) {
+    alert(e.message);
+  }
+});
 
 document.getElementById("fileAttach").onchange = async (ev) => {
   try {

@@ -8,12 +8,20 @@ from typing import Any, Optional
 
 from flask import Flask, jsonify, render_template, request
 
+from .agency_library import (
+    get_country_mails,
+    import_excel_to_library,
+    library_summary,
+    load_library,
+    save_library,
+    set_country_mails,
+)
+from .attach_util import join_attachments, split_attachments
 from .importer import import_agencies
 from .models import AgencyMail, AppConfig, MailStatus, SendProgress
 from .paths import bundle_dir, user_data_dir, web_dir
 from .queue_worker import SemiAutoQueue
 from .sender import OutlookDesktopSender
-from .attach_util import join_attachments, split_attachments
 from .template_engine import SUGGESTED_SUBJECT, SUGGESTED_TEMPLATE_HTML, render_body_html, render_subject
 
 ROOT = user_data_dir()
@@ -43,10 +51,12 @@ class AppState:
             compose_provider=self._compose_snapshot,
         )
         self.mails: list[AgencyMail] = []
+        self.active_country: str = ""
         self.subject: str = self.config.default_subject or SUGGESTED_SUBJECT
         self.attachment: str = self.config.default_attachment or ""
         self.template_html: str = self._load_template_html()
         self.selected_index: int = 0
+        self._boot_library()
         self.progress: dict[str, Any] = {
             "total": 0,
             "done": 0,
@@ -62,6 +72,38 @@ class AppState:
             "logs": [],
         }
         self._lock = threading.Lock()
+
+    def _boot_library(self) -> None:
+        """Khởi động: nếu có thư viện đã lưu → nạp country đang chọn."""
+        try:
+            lib = load_library()
+            summary = library_summary(lib)
+            country = str(lib.get("active_country") or "")
+            if not country and summary["countries"]:
+                country = summary["countries"][0]
+            if country:
+                self.load_country(country, persist=False)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def load_country(self, country: str, *, persist: bool = True) -> int:
+        lib = load_library()
+        mails = get_country_mails(lib, country)
+        self.mails = mails
+        self.active_country = country
+        self.selected_index = 0
+        self.apply_compose_to_mails()
+        if persist:
+            lib["active_country"] = country
+            save_library(lib)
+        return len(mails)
+
+    def persist_active_country_mails(self) -> None:
+        if not self.active_country:
+            return
+        lib = load_library()
+        lib = set_country_mails(lib, self.active_country, self.mails)
+        save_library(lib)
 
     def _load_config(self) -> AppConfig:
         cfg_path = CONFIG_PATH if CONFIG_PATH.exists() else (BUNDLE / "config.example.json")
@@ -201,11 +243,14 @@ class AppState:
                     "account_name": m.account_name,
                     "account_mail": m.account_mail,
                     "mail_cc": m.mail_cc,
+                    "country": m.country or self.active_country,
                     "status": m.status.value,
                     "error": m.error,
                 }
                 for i, m in enumerate(self.mails)
             ],
+            "active_country": self.active_country,
+            "library": library_summary(),
             "delay_min": self.queue.delay_min,
             "delay_max": self.queue.delay_max,
             "progress": self.progress,
@@ -368,21 +413,167 @@ def api_compose():
 
 @flask_app.post("/api/import")
 def api_import():
+    """Nạp Excel vào thư viện (theo sheet/country) rồi chọn country đầu tiên."""
     f = request.files.get("file")
     if not f:
         return jsonify({"ok": False, "error": "Thiếu file Excel"}), 400
     UPLOAD_DIR.mkdir(exist_ok=True)
     suffix = Path(f.filename or "list.xlsx").suffix.lower() or ".xlsx"
-    path = UPLOAD_DIR / f"import_{uuid.uuid4().hex}{suffix}"
+    if suffix not in {".xlsx", ".xlsm", ".csv"}:
+        return jsonify({"ok": False, "error": "Chỉ hỗ trợ .xlsx / .csv"}), 400
+    path = UPLOAD_DIR / f"library_{uuid.uuid4().hex}{suffix}"
     f.save(path)
     try:
-        STATE.mails = import_agencies(path)
-        STATE.apply_compose_to_mails()
+        if suffix == ".csv":
+            # CSV → 1 country General
+            mails = import_agencies(path)
+            from .agency_library import mail_to_lib_dict, empty_library
+
+            lib = empty_library()
+            lib["source_name"] = f.filename or path.name
+            lib["countries"] = {"General": [mail_to_lib_dict(m) for m in mails]}
+            lib["active_country"] = "General"
+            save_library(lib)
+        else:
+            lib = import_excel_to_library(path, source_name=f.filename or path.name)
+        country = str(lib.get("active_country") or "")
+        count = STATE.load_country(country) if country else 0
         _validate_mails()
-        STATE.selected_index = 0 if STATE.mails else 0
-        return jsonify({"ok": True, "count": len(STATE.mails), "state": STATE.snapshot()})
+        return jsonify(
+            {
+                "ok": True,
+                "count": count,
+                "countries": library_summary(lib)["countries"],
+                "active_country": STATE.active_country,
+                "state": STATE.snapshot(),
+            }
+        )
     except Exception as exc:  # noqa: BLE001
         return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@flask_app.get("/api/library")
+def api_library():
+    return jsonify({"ok": True, **library_summary()})
+
+
+@flask_app.post("/api/library/select")
+def api_library_select():
+    data = request.get_json(force=True, silent=True) or {}
+    country = str(data.get("country") or "").strip()
+    if not country:
+        return jsonify({"ok": False, "error": "Thiếu country"}), 400
+    summary = library_summary()
+    if country not in summary["countries"]:
+        return jsonify({"ok": False, "error": f"Không có country: {country}"}), 400
+    if STATE.queue.is_running:
+        return jsonify({"ok": False, "error": "Đang Semi-Auto — Stop trước khi đổi country"}), 400
+    count = STATE.load_country(country)
+    _validate_mails()
+    return jsonify(
+        {
+            "ok": True,
+            "count": count,
+            "active_country": STATE.active_country,
+            "state": STATE.snapshot(),
+        }
+    )
+
+
+@flask_app.post("/api/mails/reorder")
+def api_mails_reorder():
+    data = request.get_json(force=True, silent=True) or {}
+    order = data.get("order")
+    if not isinstance(order, list):
+        return jsonify({"ok": False, "error": "Thiếu order[]"}), 400
+    try:
+        idxs = [int(i) for i in order]
+    except Exception:  # noqa: BLE001
+        return jsonify({"ok": False, "error": "order không hợp lệ"}), 400
+    if sorted(idxs) != list(range(len(STATE.mails))):
+        return jsonify({"ok": False, "error": "order không khớp danh sách"}), 400
+    STATE.mails = [STATE.mails[i] for i in idxs]
+    for i, m in enumerate(STATE.mails, start=1):
+        m.row_index = i
+    STATE.persist_active_country_mails()
+    if STATE.selected_index >= len(STATE.mails):
+        STATE.selected_index = max(0, len(STATE.mails) - 1)
+    return jsonify({"ok": True, "state": STATE.snapshot()})
+
+
+@flask_app.post("/api/mails/delete")
+def api_mails_delete():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        idx = int(data.get("index"))
+    except Exception:  # noqa: BLE001
+        return jsonify({"ok": False, "error": "Thiếu index"}), 400
+    if idx < 0 or idx >= len(STATE.mails):
+        return jsonify({"ok": False, "error": "index ngoài phạm vi"}), 400
+    if STATE.queue.is_running:
+        return jsonify({"ok": False, "error": "Đang Semi-Auto — Stop trước khi xóa"}), 400
+    STATE.mails.pop(idx)
+    for i, m in enumerate(STATE.mails, start=1):
+        m.row_index = i
+    STATE.persist_active_country_mails()
+    if STATE.selected_index >= len(STATE.mails):
+        STATE.selected_index = max(0, len(STATE.mails) - 1)
+    _validate_mails()
+    return jsonify({"ok": True, "state": STATE.snapshot()})
+
+
+@flask_app.post("/api/mails/add")
+def api_mails_add():
+    data = request.get_json(force=True, silent=True) or {}
+    if STATE.queue.is_running:
+        return jsonify({"ok": False, "error": "Đang Semi-Auto — Stop trước khi thêm"}), 400
+    mail = AgencyMail(
+        agency_company=str(data.get("agency_company") or "").strip(),
+        account_name=str(data.get("account_name") or "").strip(),
+        account_mail=str(data.get("account_mail") or "").strip(),
+        mail_cc=str(data.get("mail_cc") or "").strip(),
+        country=STATE.active_country or str(data.get("country") or "").strip(),
+        status=MailStatus.PENDING,
+        row_index=len(STATE.mails) + 1,
+    )
+    if not mail.account_mail or "@" not in mail.account_mail:
+        return jsonify({"ok": False, "error": "Account Mail không hợp lệ"}), 400
+    STATE.apply_compose_to_mails()
+    mail.subject = STATE.subject
+    mail.template_mail = STATE.template_html
+    mail.attachment = STATE.attachment
+    STATE.mails.append(mail)
+    STATE.persist_active_country_mails()
+    STATE.selected_index = len(STATE.mails) - 1
+    _validate_mails()
+    return jsonify({"ok": True, "index": STATE.selected_index, "state": STATE.snapshot()})
+
+
+@flask_app.post("/api/mails/update")
+def api_mails_update():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        idx = int(data.get("index"))
+    except Exception:  # noqa: BLE001
+        return jsonify({"ok": False, "error": "Thiếu index"}), 400
+    if idx < 0 or idx >= len(STATE.mails):
+        return jsonify({"ok": False, "error": "index ngoài phạm vi"}), 400
+    mail = STATE.mails[idx]
+    if "agency_company" in data:
+        mail.agency_company = str(data.get("agency_company") or "").strip()
+    if "account_name" in data:
+        mail.account_name = str(data.get("account_name") or "").strip()
+    if "account_mail" in data:
+        mail.account_mail = str(data.get("account_mail") or "").strip()
+    if "mail_cc" in data:
+        mail.mail_cc = str(data.get("mail_cc") or "").strip()
+    STATE.persist_active_country_mails()
+    _validate_mails()
+    return jsonify({"ok": True, "state": STATE.snapshot()})
+
+
+# Outlook Exchange thường giới hạn ~20–25MB tổng đính kèm — soft-cap an toàn
+_MAX_ATTACH_TOTAL_BYTES = 18 * 1024 * 1024
 
 
 @flask_app.post("/api/attachment")
@@ -414,6 +605,33 @@ def api_attachment():
             current.append(path)
         added.append(path)
         names.append(dest.name)
+
+    total = 0
+    for p in current:
+        try:
+            total += Path(p).stat().st_size
+        except Exception:  # noqa: BLE001
+            pass
+    if total > _MAX_ATTACH_TOTAL_BYTES:
+        # rollback files vừa thêm
+        for p in added:
+            try:
+                Path(p).unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+            if p in current:
+                current.remove(p)
+        mb = round(total / (1024 * 1024), 1)
+        return jsonify(
+            {
+                "ok": False,
+                "error": (
+                    f"Tổng file đính kèm ~{mb}MB vượt mức an toàn Outlook (~18MB).\n"
+                    "Bớt file hoặc nén lại rồi thử."
+                ),
+            }
+        ), 400
+
     STATE.attachment = join_attachments(current)
     STATE.apply_compose_to_mails()
     STATE.save_config()
@@ -424,6 +642,7 @@ def api_attachment():
             "paths": current,
             "name": ", ".join(names),
             "attachments": [{"path": p, "name": Path(p).name} for p in current],
+            "total_bytes": total,
         }
     )
 

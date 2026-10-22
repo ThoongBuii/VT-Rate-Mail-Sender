@@ -22,6 +22,7 @@ class AgencyMail:
     account_name: str = ""
     account_mail: str = ""
     mail_cc: str = ""
+    country: str = ""
     subject: str = ""
     attachment: str = ""
     template_mail: str = ""

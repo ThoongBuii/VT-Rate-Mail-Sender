@@ -26,9 +26,14 @@
   </header>
 
   <section class="toolbar">
-    <label class="file-btn">
-      Import Excel
-      <input id="fileImport" type="file" accept=".xlsx,.csv,.xls" hidden />
+    <label class="country-label">Country
+      <select id="countrySelect" title="Chọn country từ thư viện đã lưu">
+        <option value="">— Chưa có —</option>
+      </select>
+    </label>
+    <label class="file-btn ghost-file">
+      Nạp Excel
+      <input id="fileImport" type="file" accept=".xlsx,.xlsm,.csv" hidden />
     </label>
     <button id="btnValidate" class="btn success" type="button">Kiểm tra</button>
     <div class="tabs">
@@ -45,7 +50,11 @@
 
   <main class="layout">
     <aside class="panel list-panel">
-      <h2>Danh sách agency</h2>
+      <div class="list-head">
+        <h2>Danh sách agency</h2>
+        <button id="btnAddAgency" class="btn ghost compact-btn" type="button" title="Thêm agency">+ Thêm</button>
+      </div>
+      <p id="libraryHint" class="list-hint muted"></p>
       <div id="mailList" class="mail-list"></div>
     </aside>
 
@@ -159,6 +168,20 @@
       </div>
     </section>
   </main>
+
+  <dialog id="agencyDialog" class="agency-dialog">
+    <form id="agencyForm" class="agency-form">
+      <h3 id="agencyDialogTitle">Thêm agency</h3>
+      <label>Company <input id="dlgCompany" type="text" required /></label>
+      <label>Account Name <input id="dlgName" type="text" /></label>
+      <label>Account Mail <input id="dlgMail" type="email" required /></label>
+      <label>Mail CC <input id="dlgCc" type="text" placeholder="email1; email2" /></label>
+      <div class="dialog-actions">
+        <button id="btnAgencyCancel" class="btn ghost" type="button">Hủy</button>
+        <button id="btnAgencySave" class="btn primary" type="submit">Lưu</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="/static/app.js"></script>
 </body>
