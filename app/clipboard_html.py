@@ -305,13 +305,29 @@ def read_mac_clipboard_html() -> tuple[str, dict[str, str]]:
     return html, cid_map
 
 
+def list_non_data_image_srcs(html: str) -> list[str]:
+    """Mọi src ảnh không phải data: — gây banner privacy / ảnh vỡ."""
+    out: list[str] = []
+    for m in re.finditer(
+        r"""(?is)<img\b[^>]*?\bsrc\s*=\s*(['"])([^'"]*)\1""",
+        html or "",
+    ):
+        src = (m.group(2) or "").strip()
+        if not src or src.lower().startswith("data:"):
+            continue
+        out.append(src)
+    return out
+
+
 def embed_remote_http_images(html: str, *, timeout: float = 8.0) -> str:
     """
-    Tải ảnh src=http(s) → data URI (internal).
+    Tải ảnh src=http(s) hoặc //… → data URI (internal).
     Tránh banner Outlook «To protect your privacy, some external images…».
     """
-    if not html or not re.search(r"""src\s*=\s*["']https?://""", html, flags=re.I):
-        return html or ""
+    if not html:
+        return ""
+    if not re.search(r"""src\s*=\s*["'](https?:)?//""", html, flags=re.I):
+        return html
 
     import urllib.request
 
@@ -323,7 +339,7 @@ def embed_remote_http_images(html: str, *, timeout: float = 8.0) -> str:
         try:
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "VTRateMailSender/1.0"},
+                headers={"User-Agent": "Mozilla/5.0 VTRateMailSender/1.0"},
                 method="GET",
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -332,7 +348,6 @@ def embed_remote_http_images(html: str, *, timeout: float = 8.0) -> str:
             if not raw or len(raw) > 4_000_000:
                 return None
             if not ctype.startswith("image/"):
-                # đoán theo URL
                 ctype = _mime_for_name(urlparse(url).path or "x.png")
             uri = f"data:{ctype};base64,{base64.b64encode(raw).decode('ascii')}"
             cache[url] = uri
@@ -342,20 +357,42 @@ def embed_remote_http_images(html: str, *, timeout: float = 8.0) -> str:
 
     def _repl(m: re.Match[str]) -> str:
         q = m.group(1)
-        src = m.group(2)
-        if not re.match(r"^https?://", src, flags=re.I):
+        src = m.group(2).strip()
+        url = src
+        if src.startswith("//"):
+            url = "https:" + src
+        if not re.match(r"^https?://", url, flags=re.I):
             return m.group(0)
-        uri = _fetch(src)
+        uri = _fetch(url)
         if not uri:
             return m.group(0)
         return f"src={q}{uri}{q}"
 
     return re.sub(
-        r"""src\s*=\s*(['"])(https?://[^'"]+)\1""",
+        r"""src\s*=\s*(['"])((?:https?:)?//[^'"]+)\1""",
         _repl,
         html,
         flags=re.I,
     )
+
+
+def ensure_images_internal(html: str) -> str:
+    """
+    Nhúng hết ảnh có thể; nếu còn src ngoài data: → lỗi rõ
+    (tránh mail gửi đi còn banner privacy).
+    """
+    s = embed_remote_http_images(html or "")
+    leftover = list_non_data_image_srcs(s)
+    if leftover:
+        sample = leftover[0][:120]
+        raise RuntimeError(
+            "Chữ ký / nội dung còn ảnh ngoài (http/cid/file) — người nhận sẽ thấy "
+            "«external images were not downloaded».\n"
+            f"Ví dụ còn lại: {sample}\n\n"
+            "Cách đúng: Outlook New Mail → chọn cả chữ ký + logo → Cmd+C "
+            "→ app «Dán từ Clipboard» (không dán tay vào khung nếu mất ảnh) → Lưu."
+        )
+    return s
 
 
 def strip_cf_html_headers(html: str) -> str:
@@ -520,6 +557,10 @@ def clipboard_html_for_compose(browser_html: str = "") -> str:
         html = browser_html or ""
 
     html = embed_local_and_cid_images(html, cid_map)
+    # Nếu browser HTML còn cid/file nhưng clip có map ảnh — gắn lại
+    if browser_html and cid_map:
+        html = embed_local_and_cid_images(html, cid_map)
+    html = embed_remote_http_images(html)
     html = convert_px_font_sizes_to_pt(html)
     html = harden_tables_for_outlook(html)
     return html.strip()

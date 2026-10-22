@@ -505,6 +505,7 @@ body {
   line-height: 1.35;
   color: #222;
   outline: none;
+  contain: content;
 }
 .compose-editor:focus {
   border-color: var(--blue);
@@ -515,7 +516,10 @@ body {
   color: var(--muted);
   pointer-events: none;
 }
-.compose-editor table { border-collapse: collapse; }
+.compose-editor table {
+  border-collapse: collapse;
+  contain: layout style;
+}
 .compose-editor img { max-width: 100%; height: auto; }
 .compose-editor p { margin: 0 0 0.6em; }
 .compose-editor p:last-child { margin-bottom: 0; }

@@ -341,7 +341,7 @@ def api_outlook_capture_signature():
 
 @flask_app.post("/api/outlook/save-signature")
 def api_outlook_save_signature():
-    """macOS: user dán chữ ký vào app (html) hoặc đọc clipboard nếu html trống."""
+    """macOS: lưu chữ ký từ clipboard / html đã chuẩn bị (ảnh phải internal)."""
     try:
         data = request.get_json(force=True, silent=True) or {}
         html = str(data.get("html") or "")
@@ -354,6 +354,26 @@ def api_outlook_save_signature():
                 "message": msg,
                 "signature": st,
                 "preview_html": preview[:200_000] if preview else "",
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@flask_app.post("/api/outlook/preview-signature-clipboard")
+def api_outlook_preview_signature_clipboard():
+    """macOS: đọc Clipboard Outlook → preview đã nhúng ảnh (chưa lưu)."""
+    import re as _re
+
+    try:
+        preview = STATE.sender.preview_mac_signature_clipboard()
+        n_img = len(_re.findall(r"data:image/", preview or "", flags=_re.I))
+        return jsonify(
+            {
+                "ok": True,
+                "preview_html": (preview or "")[:200_000],
+                "image_count": n_img,
+                "message": f"Preview OK · {n_img} ảnh internal. Bấm «Lưu chữ ký» để dùng.",
             }
         )
     except Exception as exc:  # noqa: BLE001

@@ -155,6 +155,11 @@ class OutlookDesktopSender:
         self._ready = True
         return msg
 
+    def preview_mac_signature_clipboard(self) -> str:
+        if platform.system() != "Darwin":
+            raise RuntimeError("Chỉ macOS.")
+        return self._mac.preview_signature_from_clipboard()
+
     def mac_signature_html(self) -> str:
         if platform.system() != "Darwin":
             return ""

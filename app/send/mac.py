@@ -178,16 +178,16 @@ def _activate_app(name: str) -> None:
 
 
 def _prepare_signature_html(html: str) -> str:
-    """Nhúng ảnh remote → data URI (internal) — hết banner privacy."""
+    """Nhúng ảnh → data URI; từ chối nếu còn ảnh ngoài (banner privacy)."""
     from ..clipboard_html import (
         embed_local_and_cid_images,
-        embed_remote_http_images,
+        ensure_images_internal,
         strip_cf_html_headers,
     )
 
     s = strip_cf_html_headers(html or "")
     s = embed_local_and_cid_images(s)
-    s = embed_remote_http_images(s)
+    s = ensure_images_internal(s)
     return s.strip()
 
 
@@ -294,31 +294,50 @@ end tell
     def load_signature_html(self) -> str:
         if not has_ready_signature():
             return ""
+        from ..clipboard_html import (
+            embed_local_and_cid_images,
+            embed_remote_http_images,
+            strip_cf_html_headers,
+        )
+
         raw = signature_path().read_text(encoding="utf-8", errors="ignore")
-        cleaned = _prepare_signature_html(raw)
+        cleaned = embed_remote_http_images(
+            embed_local_and_cid_images(strip_cf_html_headers(raw))
+        )
         if cleaned != raw and len(html_visible_text(cleaned)) >= 20:
             try:
+                # Chỉ ghi lại nếu đã internal hoàn toàn
+                _prepare_signature_html(cleaned)
                 signature_path().write_text(cleaned, encoding="utf-8")
             except Exception:  # noqa: BLE001
                 pass
             return cleaned
         return raw
 
-    def save_signature_html(self, html: str = "") -> str:
+    def save_signature_html(self, html: str = "", *, prefer_clipboard: bool = True) -> str:
         """
-        Lưu chữ ký do user Copy/dán từ Outlook.
-        Ưu tiên clipboard hệ thống (giữ ảnh); html từ khung dán là dự phòng.
+        Lưu chữ ký do user Copy từ Outlook.
+        Ưu tiên clipboard hệ thống (WebArchive giữ ảnh). Không lưu nếu còn ảnh ngoài.
         """
         from ..clipboard_html import clipboard_html_for_compose
 
+        browser = (html or "").strip()
+        normalized = ""
         try:
-            # Đọc clip Mac trước; nếu trống thì dùng html user dán vào khung
-            normalized = clipboard_html_for_compose(html or "")
+            if prefer_clipboard:
+                normalized = clipboard_html_for_compose("")
+            if len(html_visible_text(normalized)) < 30 and browser:
+                normalized = clipboard_html_for_compose(browser)
+            elif not normalized.strip() and browser:
+                normalized = browser
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(
-                "Không đọc được chữ ký.\n"
-                "Outlook: New Mail → Copy chữ ký (Cmd+C) → app: «Dán từ Clipboard»."
-            ) from exc
+            if browser:
+                normalized = browser
+            else:
+                raise RuntimeError(
+                    "Không đọc được chữ ký từ Clipboard.\n"
+                    "Outlook: New Mail → chọn chữ ký + logo → Cmd+C → «Dán từ Clipboard»."
+                ) from exc
 
         prepared = _prepare_signature_html(normalized)
         if len(html_visible_text(prepared)) < 30:
@@ -326,15 +345,26 @@ end tell
                 "Chữ ký quá ngắn / clipboard trống.\n"
                 "Outlook → New Mail → chọn chữ ký + logo → Cmd+C → «Dán từ Clipboard»."
             )
+        n_img = len(re.findall(r"data:image/", prepared, flags=re.I))
+        if n_img < 1:
+            raise RuntimeError(
+                "Chữ ký không có ảnh nhúng (logo).\n"
+                "Hãy chọn cả vùng chữ ký có logo trong Outlook rồi Cmd+C lại.\n"
+                "Không dùng Cmd+V vào khung nếu thấy icon ảnh vỡ."
+            )
 
         signature_path().write_text(prepared, encoding="utf-8")
-        n_img = len(re.findall(r"data:image/", prepared, flags=re.I))
-        note = (
-            f"{n_img} ảnh internal (không banner privacy)."
-            if n_img
-            else "không có ảnh — nên Copy cả logo từ Outlook."
+        return (
+            f"Đã lưu chữ ký ({len(prepared)} ký tự, {n_img} ảnh internal). "
+            "Gửi sẽ không còn banner privacy. Có thể Semi-Auto."
         )
-        return f"Đã lưu chữ ký ({len(prepared)} ký tự, {note}) Có thể Semi-Auto."
+
+    def preview_signature_from_clipboard(self) -> str:
+        """Đọc clipboard → HTML đã nhúng ảnh (không lưu)."""
+        from ..clipboard_html import clipboard_html_for_compose
+
+        normalized = clipboard_html_for_compose("")
+        return _prepare_signature_html(normalized)
 
     def capture_signature(self) -> str:
         """Tương thích API cũ — lưu từ clipboard hệ thống."""
@@ -383,7 +413,13 @@ end tell
 
         sig = self.load_signature_html()
         full = merge_body_with_outlook_signature(prepared, sig)
-        full = _prepare_signature_html(full)  # chắc chắn không còn http ảnh
+        try:
+            full = _prepare_signature_html(full)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Mail còn ảnh ngoài — không gửi (tránh banner privacy cho người nhận).\n"
+                f"{exc}"
+            ) from exc
         if len(html_visible_text(full)) < 80:
             raise RuntimeError("Nội dung mail sau merge quá ngắn — hủy gửi.")
 

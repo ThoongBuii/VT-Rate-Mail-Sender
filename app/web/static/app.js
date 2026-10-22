@@ -36,10 +36,12 @@ function setComposeHtml(html) {
   composeEl().innerHTML = html || "";
 }
 
-function getComposeHtml() {
+function getComposeHtml({ normalize = true } = {}) {
   const ed = composeEl();
   let html = ed.innerHTML || "";
   if (!html.replace(/<br\s*\/?>/gi, "").replace(/&nbsp;/gi, "").trim()) return "";
+  // Autosave: bỏ normalize (DOM parse bảng lớn → giật). Chỉ normalize lúc Preview/Send.
+  if (!normalize) return html;
   return normalizeHtmlForOutlook(html);
 }
 
@@ -103,8 +105,8 @@ function normalizeHtmlForOutlook(html) {
 function scheduleSaveCompose() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    saveCompose().catch(() => {});
-  }, 500);
+    saveCompose({ normalize: false }).catch(() => {});
+  }, 1200);
 }
 
 function frameDoc(html) {
@@ -725,7 +727,7 @@ function applyState(s, forceHtml = false) {
       btnSig.classList.toggle("ok-sig", ready);
     }
   }
-  if (forceHtml || !getComposeHtml()) {
+  if (forceHtml || !getComposeHtml({ normalize: false })) {
     setComposeHtml(s.template_html || "");
   }
   previewIndex = Math.min(previewIndex, Math.max(0, (s.mails?.length || 1) - 1));
@@ -759,13 +761,15 @@ async function refreshState(forceHtml = false) {
 }
 
 async function saveCompose(extra = {}) {
+  const normalize = extra.normalize !== false;
+  const { normalize: _n, ...rest } = extra;
   const payload = {
     subject: document.getElementById("subject").value,
-    template_html: getComposeHtml(),
+    template_html: getComposeHtml({ normalize }),
     delay_min: Number(document.getElementById("delayMin").value || 10),
     delay_max: Number(document.getElementById("delayMax").value || 20),
     selected_index: state ? state.selected_index : 0,
-    ...extra,
+    ...rest,
   };
   await api("/api/compose", {
     method: "POST",
@@ -813,8 +817,16 @@ async function loadPreview(index) {
 
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(async () => {
+  const tick = async () => {
     try {
+      // Đang soạn / mở dialog chữ ký → poll thưa, tránh giật UI
+      const sigOpen = document.getElementById("sigDialog")?.open;
+      const edFocused = document.activeElement === composeEl();
+      const running = !!state?.progress?.is_running;
+      if (!running && (sigOpen || edFocused)) {
+        pollTimer = setTimeout(tick, 4000);
+        return;
+      }
       const p = await api("/api/progress");
       applyProgress(p);
       if (p && p.is_running) {
@@ -826,7 +838,9 @@ function startPolling() {
         renderList();
       }
     } catch (_) {}
-  }, 1000);
+    pollTimer = setTimeout(tick, state?.progress?.is_running ? 900 : 2500);
+  };
+  tick();
 }
 
 document.getElementById("tabCompose").onclick = () => setView("compose");
@@ -860,6 +874,9 @@ document.getElementById("btnOutlook").onclick = async () => {
   }
 };
 
+/** HTML chữ ký đã nhúng ảnh (từ Clipboard) — không lấy từ contenteditable (dễ mất ảnh). */
+let pendingSigHtml = "";
+
 function sigPasteBox() {
   return document.getElementById("sigPasteBox");
 }
@@ -868,16 +885,19 @@ async function openSigDialog() {
   const dlg = document.getElementById("sigDialog");
   const box = sigPasteBox();
   if (!dlg || !box) return;
+  pendingSigHtml = "";
   box.innerHTML = "";
   try {
     const prev = await api("/api/outlook/signature-preview");
-    if (prev.preview_html) box.innerHTML = prev.preview_html;
+    if (prev.preview_html) {
+      pendingSigHtml = prev.preview_html;
+      box.innerHTML = prev.preview_html;
+    }
   } catch (_) {
     /* empty */
   }
   if (typeof dlg.showModal === "function") dlg.showModal();
   else dlg.setAttribute("open", "");
-  box.focus();
 }
 
 document.getElementById("btnCaptureSig").onclick = () => {
@@ -889,20 +909,28 @@ document.getElementById("btnSigCancel")?.addEventListener("click", () => {
 });
 
 document.getElementById("btnSigClear")?.addEventListener("click", () => {
+  pendingSigHtml = "";
   const box = sigPasteBox();
   if (box) box.innerHTML = "";
 });
 
 document.getElementById("btnSigFromClip")?.addEventListener("click", async () => {
   try {
-    // Chỉ đổ preview từ clipboard — chưa lưu; user bấm «Lưu chữ ký»
-    const res = await api("/api/clipboard/paste", {
+    // Preview đã nhúng data URI — không dùng Cmd+V vào khung (mất ảnh)
+    const res = await api("/api/outlook/preview-signature-clipboard", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ html: "", replace: false }),
+      body: JSON.stringify({}),
     });
+    pendingSigHtml = res.preview_html || "";
     const box = sigPasteBox();
-    if (box && res.html) box.innerHTML = res.html;
+    if (box) box.innerHTML = pendingSigHtml;
+    if (!res.image_count) {
+      alert(
+        "Clipboard chưa có ảnh logo.\n" +
+          "Trong Outlook chọn cả chữ ký + logo → Cmd+C → bấm lại «Dán từ Clipboard»."
+      );
+    }
   } catch (e) {
     alert(e.message || String(e));
   }
@@ -910,13 +938,15 @@ document.getElementById("btnSigFromClip")?.addEventListener("click", async () =>
 
 document.getElementById("btnSigSave")?.addEventListener("click", async () => {
   try {
-    const box = sigPasteBox();
-    const html = box ? box.innerHTML || "" : "";
+    // Luôn gửi HTML đã chuẩn bị (pending) hoặc đọc lại clipboard — không tin contenteditable
+    const html = pendingSigHtml || "";
     const res = await api("/api/outlook/save-signature", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ html }),
     });
+    pendingSigHtml = res.preview_html || pendingSigHtml;
+    const box = sigPasteBox();
     if (box && res.preview_html) box.innerHTML = res.preview_html;
     await refreshState();
     alert(res.message || "Đã lưu chữ ký");
@@ -924,24 +954,6 @@ document.getElementById("btnSigSave")?.addEventListener("click", async () => {
   } catch (e) {
     alert(e.message || String(e));
   }
-});
-
-sigPasteBox()?.addEventListener("paste", async (ev) => {
-  // Cho phép paste vào khung; sau khi paste, đồng bộ ảnh từ clipboard hệ thống nếu có
-  setTimeout(async () => {
-    try {
-      const box = sigPasteBox();
-      const html = box?.innerHTML || "";
-      const res = await api("/api/clipboard/paste", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ html, replace: false }),
-      });
-      if (res.html && box) box.innerHTML = res.html;
-    } catch (_) {
-      /* giữ paste browser */
-    }
-  }, 0);
 });
 
 const editor = composeEl();
