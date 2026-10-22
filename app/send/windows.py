@@ -1,11 +1,12 @@
 """Windows Outlook send via COM — độc lập hoàn toàn với macOS.
 
-Luồng (InsertFile — không gán HTMLBody cho ảnh):
-1) CreateItem + Display = New Mail (chữ ký Outlook nguyên)
-2) To / Cc / Subject
-3) Xóa dòng trống đầu → WordEditor.InsertFile(body.htm + ảnh file:///)
-4) BreakLink ảnh body (embed) — không đụng chữ ký
-5) Đính Excel → Save → Send
+Luồng gửi (giữ nguyên nội dung/ảnh/chữ ký):
+1) CreateItem + Display = New Mail (chữ ký Outlook)
+2) A–D: ẩn Inspector autosend + trả focus về cửa sổ đang làm
+3) To / Cc / Subject → InsertFile body+ảnh → BreakLink
+4) Disable input cửa sổ autosend → Save → Send
+
+Không đổi đường gửi mail — chỉ tách UI để không cướp chat/soạn tay.
 """
 
 from __future__ import annotations
@@ -21,6 +22,14 @@ from .inline_images import (
     cleanup_temp_files,
     clear_windows_clipboard,
     insert_body_html_via_word_file,
+)
+from .win_isolate import (
+    IsolateState,
+    get_foreground_hwnd,
+    isolate_after_display,
+    lock_input_after_content,
+    reassert_user_focus,
+    unlock_before_send,
 )
 
 
@@ -127,7 +136,6 @@ class WindowsOutlookSender:
             word_doc = None
 
         if word_doc is None:
-            # Fallback cực hiếm: không có WordEditor
             try:
                 mail_item.HTMLBody = body_html + (str(mail_item.HTMLBody or ""))
             except Exception:  # noqa: BLE001
@@ -147,7 +155,6 @@ class WindowsOutlookSender:
             pass
         clear_windows_clipboard()
 
-        # Dọn attachment HTML tạm nếu Outlook tự đính
         try:
             for i in range(int(mail_item.Attachments.Count), 0, -1):
                 att = mail_item.Attachments.Item(i)
@@ -168,7 +175,7 @@ class WindowsOutlookSender:
         body_html: str,
         attachment: Optional[Union[Path, Sequence[Path]]] = None,
     ) -> None:
-        """New Mail → InsertFile body+ảnh → Send (chữ ký Outlook nguyên)."""
+        """New Mail (ẩn UI) → InsertFile body+ảnh → Send — không cướp focus user."""
         import win32com.client  # type: ignore
 
         if not to_list:
@@ -183,6 +190,7 @@ class WindowsOutlookSender:
         account = self._windows_pick_account(outlook)
         mail_item = outlook.CreateItem(0)
         pictures: list[InlinePicture] = []
+        isolate = IsolateState()
 
         try:
             if account is not None:
@@ -190,6 +198,9 @@ class WindowsOutlookSender:
                     mail_item.SendUsingAccount = account
                 except Exception:  # noqa: BLE001
                     pass
+
+            # Nhớ cửa sổ đang làm (chat / mail khác) TRƯỚC Display
+            prev_hwnd = get_foreground_hwnd()
 
             try:
                 insp = mail_item.GetInspector
@@ -202,29 +213,42 @@ class WindowsOutlookSender:
 
             try:
                 mail_item.Display(False)
-                time.sleep(0.5)
+                # Ẩn nhanh — sleep ngắn hơn trước đây để giảm khe nháy
+                time.sleep(0.12)
+                isolate = isolate_after_display(
+                    mail_item, prev_foreground=prev_hwnd, settle_ms=0.05
+                )
             except Exception:  # noqa: BLE001
-                pass
+                isolate = IsolateState(prev_foreground=prev_hwnd)
 
             mail_item.To = "; ".join(to_list)
             mail_item.CC = "; ".join(cc_list) if cc_list else ""
             mail_item.Subject = subject
+            reassert_user_focus(isolate)
 
+            # WordEditor vẫn chạy trên Inspector ẩn (chưa Disable)
             pictures = self._windows_apply_body_keep_signature(mail_item, prepared)
+            reassert_user_focus(isolate)
 
             for path in files:
                 mail_item.Attachments.Add(str(path.resolve()))
 
+            # Nội dung xong → khóa input cửa sổ autosend (lớp C)
+            lock_input_after_content(isolate)
+
             try:
                 mail_item.Save()
-                time.sleep(0.3)
+                time.sleep(0.25)
             except Exception:  # noqa: BLE001
                 pass
 
+            unlock_before_send(isolate)
             mail_item.Send()
+            # Trả focus lần cuối sau Send (Inspector thường tự đóng)
+            reassert_user_focus(isolate)
         finally:
             try:
-                time.sleep(1.0)
+                time.sleep(0.8)
             except Exception:  # noqa: BLE001
                 pass
             cleanup_temp_files(pictures)
