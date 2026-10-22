@@ -1,11 +1,12 @@
 """Windows Outlook send via COM — độc lập hoàn toàn với macOS.
 
-Luồng ổn định (giống gửi tay về chữ ký + ảnh):
-1) CreateItem + Display = New Mail (Outlook tự gắn chữ ký + ảnh CID chữ ký)
-2) Điền To / Cc / Subject qua COM
-3) Merge body HTML phía trên chữ ký (giữ nguyên chữ ký Outlook)
-4) Ảnh trong body: marker tại chỗ → AddPicture embed (không Paste clipboard)
-5) Đính file thường (nếu có) → Send
+Luồng:
+1) CreateItem + Display = New Mail (Outlook gắn chữ ký + ảnh CID chữ ký)
+2) To / Cc / Subject
+3) Ảnh body — A rồi C:
+   A) data:image → cid HTML; Attach + Content-ID; rồi mới gán HTMLBody
+   C) WordEditor BreakLink / AddPicture nếu còn khung hỏng (không đụng chữ ký)
+4) Đính file thường → Save → Send
 """
 
 from __future__ import annotations
@@ -19,10 +20,11 @@ from ..outlook_html import prepare_body_html_for_outlook
 from .html_merge import merge_body_with_outlook_signature
 from .inline_images import (
     InlinePicture,
+    attach_cid_images,
     cleanup_temp_files,
     clear_windows_clipboard,
     extract_data_images_as_placeholders,
-    insert_pictures_via_word,
+    repair_broken_images_via_word,
 )
 
 
@@ -124,8 +126,7 @@ class WindowsOutlookSender:
         self, mail_item: Any, body_html: str
     ) -> list[InlinePicture]:
         """
-        Chèn nội dung HTML phía trên chữ ký Outlook (không đụng chữ ký).
-        Ảnh: marker đúng chỗ → AddPicture embed; dọn khung trống kế bên.
+        Merge body + chữ ký; ảnh = A (CID) rồi C (repair Word).
         """
         word_doc = None
         try:
@@ -137,11 +138,10 @@ class WindowsOutlookSender:
         if word_doc is not None:
             self._windows_delete_leading_empty_paragraphs(word_doc)
 
-        # 1) data:image → marker đúng vị trí ảnh + file PNG tạm
+        # 1) data:image → <img cid> + file PNG
         body_ready, pictures = extract_data_images_as_placeholders(body_html)
         existing = str(getattr(mail_item, "HTMLBody", None) or "")
-        # 2) Merge body + chữ ký Outlook (không đụng chữ ký)
-        mail_item.HTMLBody = merge_body_with_outlook_signature(body_ready, existing)
+        merged = merge_body_with_outlook_signature(body_ready, existing)
 
         try:
             for i in range(int(mail_item.Attachments.Count), 0, -1):
@@ -152,18 +152,45 @@ class WindowsOutlookSender:
         except Exception:  # noqa: BLE001
             pass
 
-        # 3) AddPicture embed tại marker — clear clipboard (tránh paste thừa)
+        # 2) A — Attach CID TRƯỚC, rồi mới gán HTMLBody (tránh khung trống sớm)
+        if pictures:
+            try:
+                attach_cid_images(mail_item, pictures)
+                time.sleep(0.15)
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            mail_item.HTMLBody = merged
+            time.sleep(0.2)
+        except Exception:  # noqa: BLE001
+            mail_item.HTMLBody = merged
+
+        # Khẳng định lại Content-ID (không Add trùng) + rebind HTML
+        if pictures:
+            try:
+                attach_cid_images(mail_item, pictures)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                mail_item.HTMLBody = str(mail_item.HTMLBody or "")
+                time.sleep(0.15)
+            except Exception:  # noqa: BLE001
+                pass
+
+        # 3) C — BreakLink / AddPicture nếu còn khung hỏng (không đụng chữ ký)
         try:
             clear_windows_clipboard()
             word_doc = mail_item.GetInspector.WordEditor
             if word_doc is not None and pictures:
-                time.sleep(0.25)
-                insert_pictures_via_word(word_doc, pictures)
+                time.sleep(0.2)
+                repair_broken_images_via_word(word_doc, pictures)
             if word_doc is not None:
                 self._windows_trim_gap_before_signature(word_doc)
             clear_windows_clipboard()
         except Exception:  # noqa: BLE001
             pass
+
         return pictures
 
     def send(
@@ -174,7 +201,7 @@ class WindowsOutlookSender:
         body_html: str,
         attachment: Optional[Union[Path, Sequence[Path]]] = None,
     ) -> None:
-        """New Mail → To/Cc/Subject/Body → ảnh Word inline → Send (chữ ký Outlook nguyên)."""
+        """New Mail → body + CID/repair ảnh → Send (chữ ký Outlook nguyên)."""
         import win32com.client  # type: ignore
 
         if not to_list:
@@ -197,7 +224,6 @@ class WindowsOutlookSender:
                 except Exception:  # noqa: BLE001
                     pass
 
-            # New Mail → Outlook tự gắn chữ ký mặc định (không đụng)
             try:
                 insp = mail_item.GetInspector
                 try:
@@ -222,10 +248,9 @@ class WindowsOutlookSender:
             for path in files:
                 mail_item.Attachments.Add(str(path.resolve()))
 
-            # Save trước Send — ép Word embed ảnh vào mail item
             try:
                 mail_item.Save()
-                time.sleep(0.25)
+                time.sleep(0.3)
             except Exception:  # noqa: BLE001
                 pass
 
