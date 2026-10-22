@@ -1,16 +1,11 @@
-"""macOS Outlook — cache chữ ký 1 lần + set content (nhanh, giống trước).
+"""macOS Outlook — user dán chữ ký 1 lần + set content (nhanh như bản cũ).
 
-Hướng paste New Mail sống: timeout / dán lệch / chậm.
-Hướng set signature sau set content: Legacy không gắn chữ ký.
-Hướng cache cũ: nhanh đúng delay — chỉ thiếu xử lý ảnh external → banner privacy.
+1) User: Outlook New Mail → Copy chữ ký → app nút «Chữ ký» → Dán/Lưu
+   (ảnh http → data URI internal — hết banner privacy)
+2) Mỗi gửi: merge body + chữ ký cache → set content → Send
+   (nhiều đính kèm, ảnh trong message; không mở cửa sổ)
 
-Cách hiện tại:
-1) Một lần: Copy chữ ký New Mail → lưu HTML, nhúng http(s) → data URI (internal)
-2) Mỗi gửi: merge body (ảnh trong message + nhiều file đính kèm) + chữ ký cache
-   → set content (đọc file utf8, không open cửa sổ) → Send
-3) Không Accessibility mỗi lần gửi (chỉ lúc lấy chữ ký)
-
-Legacy Outlook = ON.
+Không tự mở New Mail lấy chữ ký. Legacy Outlook = ON.
 """
 
 from __future__ import annotations
@@ -272,13 +267,8 @@ end tell
         trusted = ensure_assistive_access(prompt=False)
         return {
             "trusted": trusted,
-            # Semi-Auto (cache) không cần AX; chỉ lúc «Lấy chữ ký»
-            "needed": not has_ready_signature(),
-            "message": (
-                "Accessibility đã bật."
-                if trusted
-                else "Chỉ cần Accessibility khi lấy chữ ký chuẩn (1 lần)."
-            ),
+            "needed": False,
+            "message": "Không bắt buộc — chữ ký do bạn dán thủ công.",
         }
 
     def ensure_accessibility(self, *, prompt: bool = True) -> dict[str, Any]:
@@ -295,9 +285,9 @@ end tell
             "cached": ok,
             "accessibility_trusted": ensure_assistive_access(prompt=False),
             "message": (
-                "Đã có chữ ký chuẩn (ảnh internal). Semi-Auto = set content nhanh."
+                "Đã có chữ ký (ảnh internal). Có thể Semi-Auto."
                 if ok
-                else "Chưa có chữ ký — bấm «Lấy chữ ký chuẩn (1 lần)» rồi Semi-Auto."
+                else "Chưa có chữ ký — bấm «Chữ ký» → dán chữ ký Outlook vào rồi Lưu."
             ),
         }
 
@@ -305,7 +295,6 @@ end tell
         if not has_ready_signature():
             return ""
         raw = signature_path().read_text(encoding="utf-8", errors="ignore")
-        # Làm sạch / nhúng lại nếu cache cũ còn http
         cleaned = _prepare_signature_html(raw)
         if cleaned != raw and len(html_visible_text(cleaned)) >= 20:
             try:
@@ -315,160 +304,44 @@ end tell
             return cleaned
         return raw
 
+    def save_signature_html(self, html: str = "") -> str:
+        """
+        Lưu chữ ký do user Copy/dán từ Outlook.
+        Ưu tiên clipboard hệ thống (giữ ảnh); html từ khung dán là dự phòng.
+        """
+        from ..clipboard_html import clipboard_html_for_compose
+
+        try:
+            # Đọc clip Mac trước; nếu trống thì dùng html user dán vào khung
+            normalized = clipboard_html_for_compose(html or "")
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "Không đọc được chữ ký.\n"
+                "Outlook: New Mail → Copy chữ ký (Cmd+C) → app: «Dán từ Clipboard»."
+            ) from exc
+
+        prepared = _prepare_signature_html(normalized)
+        if len(html_visible_text(prepared)) < 30:
+            raise RuntimeError(
+                "Chữ ký quá ngắn / clipboard trống.\n"
+                "Outlook → New Mail → chọn chữ ký + logo → Cmd+C → «Dán từ Clipboard»."
+            )
+
+        signature_path().write_text(prepared, encoding="utf-8")
+        n_img = len(re.findall(r"data:image/", prepared, flags=re.I))
+        note = (
+            f"{n_img} ảnh internal (không banner privacy)."
+            if n_img
+            else "không có ảnh — nên Copy cả logo từ Outlook."
+        )
+        return f"Đã lưu chữ ký ({len(prepared)} ký tự, {note}) Có thể Semi-Auto."
+
     def capture_signature(self) -> str:
-        return self.capture_signature_from_new_mail()
+        """Tương thích API cũ — lưu từ clipboard hệ thống."""
+        return self.save_signature_html("")
 
     def capture_signature_from_new_mail(self) -> str:
-        """Lấy chữ ký New Mail 1 lần → cache (ảnh → data URI internal)."""
-        from ..clipboard_html import clipboard_html_for_compose, read_mac_clipboard_html
-
-        self.open_outlook()
-
-        existing = ""
-        try:
-            existing = clipboard_html_for_compose("")
-        except Exception:  # noqa: BLE001
-            existing = ""
-        if (
-            len(html_visible_text(existing)) >= 40
-            and re.search(r"data:image/", existing, flags=re.I)
-            and (
-                "best regards" in existing.lower()
-                or "vt logistics" in existing.lower()
-                or "amber" in existing.lower()
-            )
-        ):
-            prepared = _prepare_signature_html(existing)
-            signature_path().write_text(prepared, encoding="utf-8")
-            n_img = len(re.findall(r"data:image/", prepared, flags=re.I))
-            self._close_vt_sig_windows()
-            return (
-                f"Đã lưu chữ ký chuẩn từ Clipboard ({len(prepared)} ký tự, {n_img} ảnh internal)."
-            )
-
-        trusted = ensure_assistive_access(prompt=True)
-        if not trusted:
-            raise RuntimeError(
-                "«VT Rate Mail Sender» chưa Accessibility.\n"
-                "System Settings → Privacy & Security → Accessibility → bật app → thử lại.\n"
-                "(Chỉ cần 1 lần khi lấy chữ ký.)"
-            )
-
-        open_script = f'''
-tell application "Microsoft Outlook"
-  activate
-  set msg to make new outgoing message
-{_account_block(self.config.from_email)}
-  set subject of msg to "[VT-SIG] capture — will close"
-  try
-    set signature of msg to signature "AMBER"
-  end try
-  try
-    set accObj to account of msg
-    set sigs to signatures of accObj
-    if (count of sigs) > 0 then set signature of msg to item 1 of sigs
-  end try
-  try
-    if (count of signatures) > 0 then set signature of msg to item 1 of signatures
-  end try
-  open msg
-  delay 2.5
-end tell
-'''
-        _run_osascript_file(open_script, timeout=120)
-
-        html = ""
-        last_copy_err: Optional[Exception] = None
-        for ratio in (0.72, 0.65, 0.80, 0.58):
-            try:
-                self._auto_select_copy_compose_body(y_ratio=ratio)
-                time.sleep(0.4)
-                html = clipboard_html_for_compose("")
-                if len(html_visible_text(html)) >= 40 and re.search(
-                    r"data:image/", html, flags=re.I
-                ):
-                    break
-                raw_html, _cmap = read_mac_clipboard_html()
-                if raw_html.strip():
-                    html = clipboard_html_for_compose(raw_html)
-                if len(html_visible_text(html)) >= 40 and re.search(
-                    r"data:image/", html, flags=re.I
-                ):
-                    break
-                html = ""
-            except Exception as exc:  # noqa: BLE001
-                last_copy_err = exc
-                html = ""
-                continue
-
-        if len(html_visible_text(html)) < 40 or not re.search(
-            r"data:image/", html or "", flags=re.I
-        ):
-            detail = f"\nChi tiết: {last_copy_err}" if last_copy_err else ""
-            raise RuntimeError(
-                "Chưa Copy được chữ ký.\n"
-                "Cửa sổ [VT-SIG] vẫn mở — Cmd+A → Cmd+C rồi bấm lại «Lấy chữ ký chuẩn»."
-                + detail
-            )
-
-        prepared = _prepare_signature_html(html)
-        signature_path().write_text(prepared, encoding="utf-8")
-        self._close_vt_sig_windows()
-        n_img = len(re.findall(r"data:image/", prepared, flags=re.I))
-        return (
-            f"Đã lưu chữ ký chuẩn ({len(prepared)} ký tự, {n_img} ảnh internal). "
-            "Từ giờ Semi-Auto gửi nhanh — không cần Accessibility."
-        )
-
-    def _auto_select_copy_compose_body(self, *, y_ratio: float = 0.72) -> None:
-        script = f'''
-tell application "Microsoft Outlook" to activate
-delay 0.3
-tell application "System Events"
-  tell process "Microsoft Outlook"
-    set frontmost to true
-    delay 0.15
-    set win to front window
-    set {{wx, wy}} to position of win
-    set {{ww, wh}} to size of win
-    set clickX to (wx + (ww / 2)) as integer
-    set clickY to (wy + (wh * {y_ratio})) as integer
-    click at {{clickX, clickY}}
-    delay 0.2
-    key code 53
-    delay 0.08
-    click at {{clickX, clickY}}
-    delay 0.15
-    keystroke "a" using {{command down}}
-    delay 0.25
-    keystroke "c" using {{command down}}
-    delay 0.7
-  end tell
-end tell
-return "ok"
-'''
-        _run_nsapplescript(script)
-
-    def _close_vt_sig_windows(self) -> None:
-        try:
-            _run_osascript_file(
-                '''
-tell application "Microsoft Outlook"
-  try
-    repeat with m in (get outgoing messages)
-      try
-        if (subject of m as string) contains "[VT-SIG]" then
-          delete m
-        end if
-      end try
-    end repeat
-  end try
-end tell
-''',
-                timeout=60,
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        return self.save_signature_html("")
 
     def _normalize_files(
         self, attachment: Optional[Path | list[Path]]
@@ -495,9 +368,9 @@ end tell
 
         if not has_ready_signature():
             raise RuntimeError(
-                "Chưa có chữ ký chuẩn Mac.\n"
-                "Bấm «Lấy chữ ký chuẩn (1 lần)» (Legacy ON + Accessibility lần đầu),\n"
-                "rồi Semi-Auto — các lần sau gửi nhanh, không cần Accessibility."
+                "Chưa có chữ ký Mac.\n"
+                "Bấm «Chữ ký» → Copy chữ ký trong Outlook → Dán / Lưu,\n"
+                "rồi Semi-Auto."
             )
 
         prepared = prepare_body_html_for_outlook(body_html)

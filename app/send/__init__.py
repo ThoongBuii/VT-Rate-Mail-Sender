@@ -143,8 +143,15 @@ class OutlookDesktopSender:
 
     def capture_mac_signature(self) -> str:
         if platform.system() != "Darwin":
-            raise RuntimeError("Lấy chữ ký chuẩn chỉ dành cho macOS.")
-        msg = self._mac.capture_signature_from_new_mail()
+            raise RuntimeError("Lưu chữ ký chỉ dành cho macOS.")
+        msg = self._mac.save_signature_html("")
+        self._ready = True
+        return msg
+
+    def save_mac_signature_html(self, html: str = "") -> str:
+        if platform.system() != "Darwin":
+            raise RuntimeError("Lưu chữ ký chỉ dành cho macOS.")
+        msg = self._mac.save_signature_html(html)
         self._ready = True
         return msg
 

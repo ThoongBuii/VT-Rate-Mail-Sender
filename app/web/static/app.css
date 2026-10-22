@@ -91,6 +91,42 @@ body {
 .ax-banner[hidden] { display: none !important; }
 .ax-banner .compact-btn { flex-shrink: 0; }
 
+.sig-dialog {
+  border: none;
+  border-radius: 12px;
+  padding: 0;
+  max-width: 720px;
+  width: calc(100% - 32px);
+  box-shadow: 0 12px 40px rgba(15, 44, 76, 0.28);
+}
+.sig-dialog::backdrop { background: rgba(15, 44, 76, 0.45); }
+.sig-dialog-inner { padding: 20px 22px 16px; }
+.sig-dialog h3 { margin: 0 0 10px; color: var(--navy); }
+.sig-steps {
+  margin: 0 0 8px;
+  padding-left: 1.2em;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+}
+.sig-hint { margin: 0 0 10px; font-size: 12px; }
+.sig-paste {
+  min-height: 180px;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+  font-size: 13px;
+}
+.sig-paste:empty:before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+}
+.sig-actions { margin-top: 14px; flex-wrap: wrap; }
+.sig-paste img { max-width: 100%; height: auto; }
+
 .toolbar {
   display: flex;
   align-items: center;

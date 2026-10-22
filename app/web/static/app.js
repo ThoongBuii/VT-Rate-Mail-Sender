@@ -690,29 +690,10 @@ function updateAxBanner(s) {
 }
 
 async function ensureMacAccessibilityOnce(s) {
-  // Chỉ nhắc AX khi chưa có chữ ký cache (cần để lấy chữ ký 1 lần)
+  // Chữ ký do user dán — không bắt Accessibility
   if (!s || s.platform !== "Darwin") return;
-  const needAx = !s.mac_signature_ready && !s.accessibility_trusted;
-  updateAxBanner({
-    ...s,
-    accessibility_needed: needAx,
-    accessibility_message: needAx
-      ? "Cần Accessibility để «Lấy chữ ký chuẩn» (1 lần). Sau đó Semi-Auto không cần."
-      : s.accessibility_message || "",
-  });
-  if (!needAx || axPromptedThisSession) return;
+  updateAxBanner({ ...s, accessibility_needed: false });
   axPromptedThisSession = true;
-  try {
-    const st = await api("/api/accessibility/ensure", { method: "POST" });
-    updateAxBanner({
-      ...s,
-      accessibility_trusted: !!st.trusted,
-      accessibility_needed: !s.mac_signature_ready && !st.trusted,
-      accessibility_message: st.message || "",
-    });
-  } catch (_) {
-    /* banner vẫn hiện */
-  }
 }
 
 function applyState(s, forceHtml = false) {
@@ -737,10 +718,10 @@ function applyState(s, forceHtml = false) {
     if (isMac) {
       const cached = !!(s.mac_signature_cached || s.mac_signature_has_file);
       const ready = !!s.mac_signature_ready;
-      btnSig.textContent = ready ? "Chữ ký chuẩn ✓" : "Lấy chữ ký chuẩn";
+      btnSig.textContent = ready ? "Chữ ký ✓" : "Chữ ký";
       btnSig.title =
         s.mac_signature_message ||
-        "Bắt buộc 1 lần: Copy chữ ký New Mail → ảnh internal (hết banner privacy)";
+        "Dán chữ ký Outlook vào app (1 lần) rồi Semi-Auto";
       btnSig.classList.toggle("ok-sig", ready);
     }
   }
@@ -879,24 +860,89 @@ document.getElementById("btnOutlook").onclick = async () => {
   }
 };
 
-document.getElementById("btnCaptureSig").onclick = async () => {
+function sigPasteBox() {
+  return document.getElementById("sigPasteBox");
+}
+
+async function openSigDialog() {
+  const dlg = document.getElementById("sigDialog");
+  const box = sigPasteBox();
+  if (!dlg || !box) return;
+  box.innerHTML = "";
   try {
-    const ok = confirm(
-      "Chữ ký dự phòng (tuỳ chọn) — chỉ khi New Mail không lấy được chữ ký sống:\n" +
-        "1) Mở New Mail Outlook\n" +
-        "2) Copy thân thư (chữ ký + logo)\n" +
-        "3) Lưu cache\n\n" +
-        "Semi-Auto bình thường không cần bước này (giống Windows).\n" +
-        "Cần: Legacy Outlook = ON."
-    );
-    if (!ok) return;
-    const res = await api("/api/outlook/capture-signature", { method: "POST" });
-    await refreshState(true);
-    alert(res.message || "Đã lưu chữ ký dự phòng");
-  } catch (e) {
-    alert(e.message);
+    const prev = await api("/api/outlook/signature-preview");
+    if (prev.preview_html) box.innerHTML = prev.preview_html;
+  } catch (_) {
+    /* empty */
   }
+  if (typeof dlg.showModal === "function") dlg.showModal();
+  else dlg.setAttribute("open", "");
+  box.focus();
+}
+
+document.getElementById("btnCaptureSig").onclick = () => {
+  openSigDialog().catch((e) => alert(e.message || String(e)));
 };
+
+document.getElementById("btnSigCancel")?.addEventListener("click", () => {
+  document.getElementById("sigDialog")?.close();
+});
+
+document.getElementById("btnSigClear")?.addEventListener("click", () => {
+  const box = sigPasteBox();
+  if (box) box.innerHTML = "";
+});
+
+document.getElementById("btnSigFromClip")?.addEventListener("click", async () => {
+  try {
+    // Chỉ đổ preview từ clipboard — chưa lưu; user bấm «Lưu chữ ký»
+    const res = await api("/api/clipboard/paste", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ html: "", replace: false }),
+    });
+    const box = sigPasteBox();
+    if (box && res.html) box.innerHTML = res.html;
+  } catch (e) {
+    alert(e.message || String(e));
+  }
+});
+
+document.getElementById("btnSigSave")?.addEventListener("click", async () => {
+  try {
+    const box = sigPasteBox();
+    const html = box ? box.innerHTML || "" : "";
+    const res = await api("/api/outlook/save-signature", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ html }),
+    });
+    if (box && res.preview_html) box.innerHTML = res.preview_html;
+    await refreshState();
+    alert(res.message || "Đã lưu chữ ký");
+    document.getElementById("sigDialog")?.close();
+  } catch (e) {
+    alert(e.message || String(e));
+  }
+});
+
+sigPasteBox()?.addEventListener("paste", async (ev) => {
+  // Cho phép paste vào khung; sau khi paste, đồng bộ ảnh từ clipboard hệ thống nếu có
+  setTimeout(async () => {
+    try {
+      const box = sigPasteBox();
+      const html = box?.innerHTML || "";
+      const res = await api("/api/clipboard/paste", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ html, replace: false }),
+      });
+      if (res.html && box) box.innerHTML = res.html;
+    } catch (_) {
+      /* giữ paste browser */
+    }
+  }, 0);
+});
 
 const editor = composeEl();
 editor.addEventListener("input", scheduleSaveCompose);

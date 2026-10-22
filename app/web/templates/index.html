@@ -20,7 +20,7 @@
     </div>
     <div class="topbar-right">
       <span id="outlookStatus" class="status">Outlook: chưa kết nối</span>
-      <button id="btnCaptureSig" class="btn ghost" type="button" hidden title="macOS: lấy chữ ký New Mail 1 lần (ảnh internal)">Lấy chữ ký chuẩn</button>
+      <button id="btnCaptureSig" class="btn ghost" type="button" hidden title="macOS: dán chữ ký Outlook vào app (1 lần)">Chữ ký</button>
       <button id="btnOutlook" class="btn primary" type="button">Mở Outlook</button>
     </div>
   </header>
@@ -187,6 +187,25 @@
         <button id="btnAgencySave" class="btn primary" type="submit">Lưu</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="sigDialog" class="sig-dialog">
+    <div class="sig-dialog-inner">
+      <h3>Chữ ký Outlook (macOS)</h3>
+      <ol class="sig-steps">
+        <li>Mở <strong>Outlook</strong> → New Mail (để hiện chữ ký).</li>
+        <li>Chọn vùng chữ ký (có logo) → <kbd>Cmd+C</kbd>.</li>
+        <li>Quay lại app → bấm <strong>Dán từ Clipboard</strong> → kiểm tra preview → <strong>Lưu</strong>.</li>
+      </ol>
+      <p class="muted sig-hint">Hoặc dán trực tiếp (<kbd>Cmd+V</kbd>) vào khung bên dưới.</p>
+      <div id="sigPasteBox" class="sig-paste" contenteditable="true" data-placeholder="Dán chữ ký vào đây…"></div>
+      <div class="dialog-actions sig-actions">
+        <button id="btnSigFromClip" class="btn primary" type="button">Dán từ Clipboard</button>
+        <button id="btnSigClear" class="btn ghost" type="button">Xóa khung</button>
+        <button id="btnSigCancel" class="btn ghost" type="button">Đóng</button>
+        <button id="btnSigSave" class="btn success" type="button">Lưu chữ ký</button>
+      </div>
+    </div>
   </dialog>
 
   <script src="/static/app.js"></script>

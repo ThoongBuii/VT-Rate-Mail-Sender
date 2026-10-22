@@ -330,11 +330,42 @@ def api_outlook_open():
 
 @flask_app.post("/api/outlook/capture-signature")
 def api_outlook_capture_signature():
-    """macOS: nhận chữ ký từ Clipboard (HTML + ảnh) → lưu để set content khi gửi."""
+    """macOS: lưu chữ ký từ clipboard hệ thống (sau khi user Cmd+C trong Outlook)."""
     try:
         msg = STATE.sender.capture_mac_signature()
         st = STATE.sender.mac_signature_status()
         return jsonify({"ok": True, "message": msg, "signature": st})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@flask_app.post("/api/outlook/save-signature")
+def api_outlook_save_signature():
+    """macOS: user dán chữ ký vào app (html) hoặc đọc clipboard nếu html trống."""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        html = str(data.get("html") or "")
+        msg = STATE.sender.save_mac_signature_html(html)
+        st = STATE.sender.mac_signature_status()
+        preview = STATE.sender.mac_signature_html()
+        return jsonify(
+            {
+                "ok": True,
+                "message": msg,
+                "signature": st,
+                "preview_html": preview[:200_000] if preview else "",
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@flask_app.get("/api/outlook/signature-preview")
+def api_outlook_signature_preview():
+    try:
+        html = STATE.sender.mac_signature_html()
+        st = STATE.sender.mac_signature_status()
+        return jsonify({"ok": True, "preview_html": html or "", **st})
     except Exception as exc:  # noqa: BLE001
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -753,8 +784,8 @@ def api_send_start():
                 {
                     "ok": False,
                     "error": (
-                        "Chưa có chữ ký chuẩn Mac. "
-                        "Bấm «Lấy chữ ký chuẩn (1 lần)» rồi Semi-Auto."
+                        "Chưa có chữ ký Mac. "
+                        "Bấm «Chữ ký» → dán chữ ký Outlook → Lưu, rồi Semi-Auto."
                     ),
                 }
             ), 400
