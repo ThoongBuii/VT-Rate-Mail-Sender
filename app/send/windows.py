@@ -222,10 +222,17 @@ class WindowsOutlookSender:
             for path in files:
                 mail_item.Attachments.Add(str(path.resolve()))
 
+            # Save trước Send — ép Word embed ảnh vào mail item
+            try:
+                mail_item.Save()
+                time.sleep(0.25)
+            except Exception:  # noqa: BLE001
+                pass
+
             mail_item.Send()
         finally:
             try:
-                time.sleep(0.4)
+                time.sleep(1.0)
             except Exception:  # noqa: BLE001
                 pass
             cleanup_temp_files(pictures)

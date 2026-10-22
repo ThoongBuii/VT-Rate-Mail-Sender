@@ -1,10 +1,9 @@
-"""Windows Outlook — ảnh body qua WordEditor AddPicture (giống paste tay).
+"""Windows Outlook — ảnh body: paste clipboard vào Word (giống gửi tay).
 
-Chiến lược (tránh khung trống + ảnh / paste 2 lần):
-1) Gỡ hết <img data:image> khỏi HTML, lưu file tạm
-2) Chèn 1 neo ##VT_IMG_END## cuối body (trước chữ ký)
-3) Sau HTMLBody: xóa neo → AddPicture lần lượt (1 ảnh = 1 shape)
-4) Clear clipboard; xóa shape link/rỗng/trùng
+1) Gỡ <img data:image> → lưu PNG vào thư mục app (không xóa ngay sau Send)
+2) Neo ##VT_IMG_END## cuối body (trước chữ ký)
+3) Xóa neo → đưa ảnh vào Clipboard (CF_DIB) → Range.Paste (đúng 1 lần / ảnh)
+4) Clear clipboard; không đụng InlineShapes chữ ký
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from __future__ import annotations
 import base64
 import io
 import re
-import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,29 +25,33 @@ _SRC_DATA_RE = re.compile(
 IMG_END_MARKER = "##VT_IMG_END##"
 _MAX_EMAIL_WIDTH = 650
 
-# Word WdInlineShape types
-_WD_INLINE_SHAPE_LINKED_PICTURE = 4
-_WD_INLINE_SHAPE_LINKED_OLE = 2
-
 
 @dataclass
 class InlinePicture:
     path: Path
     width_px: Optional[int] = None
     height_px: Optional[int] = None
-    marker: str = ""  # legacy unused
+    marker: str = ""
 
 
 InlineCidImage = InlinePicture
 
 
-def _ext_for_mime(subtype: str) -> str:
-    sub = (subtype or "png").split("+", 1)[0].lower().strip()
-    if sub in {"jpeg", "jpg"}:
-        return "jpg"
-    if sub in {"png", "gif", "bmp"}:
-        return sub
-    return "png"
+def _inline_store_dir() -> Path:
+    try:
+        from ..paths import user_data_dir
+
+        d = user_data_dir() / "inline_send"
+    except Exception:  # noqa: BLE001
+        d = Path(tempfile_fallback()) / "vt_inline_send"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def tempfile_fallback() -> str:
+    import tempfile
+
+    return tempfile.gettempdir()
 
 
 def _parse_px(value: str) -> Optional[int]:
@@ -101,25 +104,18 @@ def _resolve_display_size(
     return w, h
 
 
-def _write_image_file(raw: bytes, path: Path, *, want_ext: str) -> Path:
-    try:
-        from PIL import Image
+def _save_png(raw: bytes, path: Path) -> Path:
+    """Luôn lưu PNG RGB/RGBA ổn định cho Word paste."""
+    from PIL import Image
 
-        with Image.open(io.BytesIO(raw)) as im:
-            if want_ext == "jpg":
-                if im.mode in ("RGBA", "P", "LA"):
-                    im = im.convert("RGB")
-                im.save(path, format="JPEG", quality=92)
-            elif want_ext == "png" or want_ext not in {"gif", "bmp"}:
-                if want_ext != "png":
-                    path = path.with_suffix(".png")
-                im.save(path, format="PNG")
-            else:
-                im.save(path)
-            return path
-    except Exception:  # noqa: BLE001
-        path.write_bytes(raw)
-        return path
+    path = path.with_suffix(".png")
+    with Image.open(io.BytesIO(raw)) as im:
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
+        im.save(path, format="PNG", optimize=True)
+    if not path.is_file() or path.stat().st_size < 32:
+        raise RuntimeError(f"Không ghi được ảnh: {path}")
+    return path
 
 
 def clear_windows_clipboard() -> None:
@@ -147,44 +143,61 @@ def clear_windows_clipboard() -> None:
         pass
 
 
+def _set_clipboard_dib(path: Path) -> None:
+    """Đưa ảnh vào clipboard dạng CF_DIB — Word Paste giống Ctrl+V thủ công."""
+    from PIL import Image
+    import win32clipboard  # type: ignore
+
+    with Image.open(path) as im:
+        if im.mode == "RGBA":
+            bg = Image.new("RGB", im.size, (255, 255, 255))
+            bg.paste(im, mask=im.split()[3])
+            im = bg
+        elif im.mode != "RGB":
+            im = im.convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, "BMP")
+        dib = buf.getvalue()[14:]  # bỏ BITMAPFILEHEADER
+
+    win32clipboard.OpenClipboard()
+    try:
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib)
+    finally:
+        win32clipboard.CloseClipboard()
+
+
 def extract_data_images_as_placeholders(html: str) -> tuple[str, list[InlinePicture]]:
-    """
-    Gỡ mọi <img data:image> khỏi HTML → file tạm.
-    Thêm 1 neo ##VT_IMG_END## cuối body (nếu có ảnh).
-    """
     if not html or "data:image/" not in html.lower():
         return html or "", []
 
     items: list[InlinePicture] = []
-    tmp_dir = Path(tempfile.mkdtemp(prefix="vt_inline_"))
+    store = _inline_store_dir()
 
     def _img_repl(tag_match: re.Match[str]) -> str:
         tag = tag_match.group(0)
         sm = _SRC_DATA_RE.search(tag)
         if not sm:
-            # img không phải data URI — bỏ luôn để tránh khung vỡ
             return ""
-
-        subtype, b64 = sm.group(2), sm.group(3)
         try:
-            raw = base64.b64decode(re.sub(r"\s+", "", b64), validate=False)
+            raw = base64.b64decode(re.sub(r"\s+", "", sm.group(3)), validate=False)
         except Exception:  # noqa: BLE001
             return ""
         if not raw:
             return ""
-
-        ext = _ext_for_mime(subtype)
-        idx = len(items)
-        path = tmp_dir / f"vt_img_{idx}_{uuid.uuid4().hex[:8]}.{ext}"
-        path = _write_image_file(raw, path, want_ext=ext)
+        try:
+            path = store / f"vt_{uuid.uuid4().hex}.png"
+            path = _save_png(raw, path)
+        except Exception:  # noqa: BLE001
+            return ""
         nat_w, nat_h = _image_natural_size(raw)
         width, height = _resolve_display_size(tag, nat_w, nat_h)
         items.append(InlinePicture(path=path, width_px=width, height_px=height))
-        return ""  # không để marker/img trong HTML → hết khung dashed trống
+        return ""
 
     new_html = _IMG_TAG_RE.sub(_img_repl, html)
     if items:
-        new_html = (new_html or "").rstrip() + f'<p style="margin:0;">{IMG_END_MARKER}</p>'
+        new_html = (new_html or "").rstrip() + f"<p>{IMG_END_MARKER}</p>"
     return new_html, items
 
 
@@ -236,58 +249,110 @@ def _apply_size(shape: Any, pic: InlinePicture) -> None:
         pass
 
 
-def _purge_bad_shapes(word_doc: Any, *, keep_min: int = 0) -> None:
-    """
-    Xóa shape gây khung trống:
-    - Linked picture / linked OLE (hay thành dashed box)
-    - Width/Height ~ 0
-    Và gộp ảnh trùng kích thước liền kề (giữ 1).
-    """
+def _find_new_shape_near(word_doc: Any, pos: int, before_starts: set[int]) -> Any:
+    """Shape mới gần điểm paste (không đụng logo chữ ký phía sau)."""
+    best = None
+    best_dist = 10_000_000
     try:
         n = _shape_count(word_doc)
     except Exception:  # noqa: BLE001
-        return
-
-    # Xóa linked / rỗng (từ cuối)
-    for i in range(n, 0, -1):
+        return None
+    for i in range(1, n + 1):
         try:
             shape = word_doc.InlineShapes(i)
-            stype = int(getattr(shape, "Type", 0) or 0)
-            w = float(getattr(shape, "Width", 0) or 0)
-            h = float(getattr(shape, "Height", 0) or 0)
-            if stype in {_WD_INLINE_SHAPE_LINKED_PICTURE, _WD_INLINE_SHAPE_LINKED_OLE}:
-                shape.Delete()
+            st = int(shape.Range.Start)
+            # Bỏ shape đã có trước (xấp xỉ theo Start cũ)
+            if any(abs(st - old) <= 2 for old in before_starts):
                 continue
-            if w < 2 or h < 2:
-                shape.Delete()
-                continue
+            dist = abs(st - pos)
+            if dist < best_dist:
+                best_dist = dist
+                best = shape
         except Exception:  # noqa: BLE001
             continue
+    return best
 
-    # Ảnh trùng kích thước liền kề → xóa bản sau (paste đôi)
+
+def _collect_shape_starts(word_doc: Any) -> set[int]:
+    starts: set[int] = set()
     try:
-        n = _shape_count(word_doc)
-    except Exception:  # noqa: BLE001
-        return
-    i = n
-    while i >= 2:
-        try:
-            a = word_doc.InlineShapes(i - 1)
-            b = word_doc.InlineShapes(i)
-            aw, ah = float(a.Width or 0), float(a.Height or 0)
-            bw, bh = float(b.Width or 0), float(b.Height or 0)
-            if abs(aw - bw) < 1.5 and abs(ah - bh) < 1.5 and aw > 5:
-                b.Delete()
-                # không giảm i quá — đã xóa i, xét lại cặp mới
-                i = min(i, _shape_count(word_doc))
+        for i in range(1, _shape_count(word_doc) + 1):
+            try:
+                starts.add(int(word_doc.InlineShapes(i).Range.Start))
+            except Exception:  # noqa: BLE001
                 continue
+    except Exception:  # noqa: BLE001
+        pass
+    return starts
+
+
+def _paste_one_image(word_doc: Any, anchor_pos: int, pic: InlinePicture) -> bool:
+    """Clipboard CF_DIB + Range.Paste — giống Ctrl+V ảnh vào New Mail."""
+    if not pic.path.is_file() or pic.path.stat().st_size < 32:
+        return False
+
+    clear_windows_clipboard()
+    try:
+        _set_clipboard_dib(pic.path)
+    except Exception:  # noqa: BLE001
+        clear_windows_clipboard()
+        return False
+
+    before_starts = _collect_shape_starts(word_doc)
+    before_n = _shape_count(word_doc)
+    try:
+        r = word_doc.Range(anchor_pos, anchor_pos)
+        r.Paste()
+    except Exception:  # noqa: BLE001
+        clear_windows_clipboard()
+        # Fallback AddPicture nếu Paste fail
+        try:
+            r = word_doc.Range(anchor_pos, anchor_pos)
+            shape = r.InlineShapes.AddPicture(str(pic.path.resolve()), False, True)
+            _apply_size(shape, pic)
+            clear_windows_clipboard()
+            return True
+        except Exception:  # noqa: BLE001
+            clear_windows_clipboard()
+            return False
+
+    time.sleep(0.05)
+    after_n = _shape_count(word_doc)
+    shape = _find_new_shape_near(word_doc, anchor_pos, before_starts)
+
+    # Paste đôi từ clip cũ → xóa shape thừa gần neo (chỉ shape mới, không đụng chữ ký xa)
+    if after_n > before_n + 1 and shape is not None:
+        try:
+            # Xóa các shape mới khác (Start gần neo) trừ shape đã chọn
+            keep_start = int(shape.Range.Start)
+            for i in range(_shape_count(word_doc), 0, -1):
+                try:
+                    s = word_doc.InlineShapes(i)
+                    st = int(s.Range.Start)
+                    if abs(st - anchor_pos) < 80 and abs(st - keep_start) > 2:
+                        # chỉ xóa nếu là shape mới
+                        if not any(abs(st - old) <= 2 for old in before_starts):
+                            s.Delete()
+                except Exception:  # noqa: BLE001
+                    continue
+            shape = _find_new_shape_near(word_doc, anchor_pos, before_starts)
         except Exception:  # noqa: BLE001
             pass
-        i -= 1
+
+    if shape is not None:
+        _apply_size(shape, pic)
+        try:
+            shape.Range.InsertParagraphAfter()
+        except Exception:  # noqa: BLE001
+            pass
+        clear_windows_clipboard()
+        return True
+
+    clear_windows_clipboard()
+    return after_n > before_n
 
 
 def insert_pictures_via_word(word_doc: Any, pictures: list[InlinePicture]) -> int:
-    """Xóa neo ##VT_IMG_END## → chèn lần lượt từng ảnh (không để img/marker trong HTML)."""
     if not word_doc or not pictures:
         return 0
 
@@ -296,25 +361,16 @@ def insert_pictures_via_word(word_doc: Any, pictures: list[InlinePicture]) -> in
 
     rng = _find_text_range(word_doc, IMG_END_MARKER)
     if rng is None:
-        # Fallback: chèn trước chữ ký / cuối document
-        try:
-            rng = word_doc.Content
-            rng.Collapse(0)  # wdCollapseStart = 1, end = 0 — dùng end
-        except Exception:  # noqa: BLE001
-            return 0
-        try:
-            # Collapse to end of document content before signature is harder;
-            # try Best Regards
-            sig = _find_text_range(word_doc, "Best Regards")
-            if sig is None:
-                sig = _find_text_range(word_doc, "Best regards")
-            if sig is not None:
-                rng = sig
-                rng.Collapse(1)  # wdCollapseStart — chèn ngay trước chữ ký
-            else:
-                rng = word_doc.Content
-                rng.Collapse(0)  # end
-        except Exception:  # noqa: BLE001
+        sig = _find_text_range(word_doc, "Best Regards") or _find_text_range(
+            word_doc, "Best regards"
+        )
+        if sig is not None:
+            rng = sig
+            try:
+                rng.Collapse(1)  # trước chữ ký
+            except Exception:  # noqa: BLE001
+                pass
+        else:
             return 0
     else:
         try:
@@ -325,50 +381,16 @@ def insert_pictures_via_word(word_doc: Any, pictures: list[InlinePicture]) -> in
             except Exception:  # noqa: BLE001
                 return 0
 
-    # Điểm neo cố định — chèn ngược để thứ tự ảnh đúng như Soạn
     try:
         anchor_pos = int(rng.Start)
     except Exception:  # noqa: BLE001
-        anchor_pos = 0
+        return 0
 
+    # Chèn ngược tại cùng neo → thứ tự cuối đúng như Soạn
     for pic in reversed(pictures):
-        if not pic.path.is_file():
-            continue
-        try:
-            clear_windows_clipboard()
-            r = word_doc.Range(anchor_pos, anchor_pos)
-            before = _shape_count(word_doc)
-            shape = r.InlineShapes.AddPicture(
-                str(pic.path.resolve()),
-                False,  # LinkToFile=False — tránh khung dashed (linked)
-                True,  # SaveWithDocument
-            )
-            after = _shape_count(word_doc)
-            for _ in range(max(0, after - before - 1)):
-                try:
-                    word_doc.InlineShapes(_shape_count(word_doc)).Delete()
-                except Exception:  # noqa: BLE001
-                    break
-
-            try:
-                _apply_size(shape, pic)
-            except Exception:  # noqa: BLE001
-                try:
-                    _apply_size(word_doc.InlineShapes(_shape_count(word_doc)), pic)
-                except Exception:  # noqa: BLE001
-                    pass
-
-            try:
-                shape.Range.InsertParagraphAfter()
-            except Exception:  # noqa: BLE001
-                pass
-
+        if _paste_one_image(word_doc, anchor_pos, pic):
             inserted += 1
-            clear_windows_clipboard()
-        except Exception:  # noqa: BLE001
-            continue
 
-    # Dọn neo sót + shape xấu/trùng
     leftover = _find_text_range(word_doc, IMG_END_MARKER)
     if leftover is not None:
         try:
@@ -379,7 +401,6 @@ def insert_pictures_via_word(word_doc: Any, pictures: list[InlinePicture]) -> in
             except Exception:  # noqa: BLE001
                 pass
 
-    _purge_bad_shapes(word_doc)
     clear_windows_clipboard()
     return inserted
 
@@ -389,16 +410,18 @@ def attach_cid_images(mail_item: Any, items: list[InlinePicture]) -> None:
 
 
 def cleanup_temp_files(items: list[InlinePicture]) -> None:
-    paths = [i.path for i in items]
-    for p in paths:
-        try:
-            p.unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001
-            pass
-    parents = {p.parent for p in paths}
-    for d in parents:
-        try:
-            if d.is_dir() and not any(d.iterdir()):
-                d.rmdir()
-        except Exception:  # noqa: BLE001
-            pass
+    """
+    Không xóa ngay file vừa Send (Outlook có thể vẫn đọc).
+    Chỉ dọn file inline_send cũ hơn 2 giờ.
+    """
+    try:
+        store = _inline_store_dir()
+        now = time.time()
+        for p in store.glob("vt_*.png"):
+            try:
+                if now - p.stat().st_mtime > 2 * 3600:
+                    p.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
