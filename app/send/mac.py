@@ -1,15 +1,12 @@
-"""macOS Outlook Legacy — Hướng 2 tinh gọn.
+"""macOS Outlook Legacy — thao tác trên cửa sổ New Mail đang mở.
 
-Bắt buộc: Legacy Outlook = ON · Accessibility · chữ ký mặc định account (AMBER).
+Bắt buộc: Legacy ON · Accessibility · chữ ký mặc định account.
 
-Giống gửi tay:
-1) New Mail → Outlook tự gắn chữ ký (không đụng signature qua AppleScript)
-2) AppleScript chỉ gắn To / Cc / Subject (đúng ô)
-3) Clipboard = đoạn Soạn (không logo) → paste vào body phía trên chữ ký
-4) Kiểm To/Cc + body đã dán → Send
+1) New Mail + gắn To / Cc / Subject (AppleScript)
+2) Focus body (Subject → Tab) rồi paste Soạn — không Cmd+V khi focus còn ở To
+3) Gắn lại To/Cc (xóa rác nếu lỡ dán vào To) + Send
 
-CẤM set content HTML (phá CID → banner + Windows trống).
-Không WordEditor (Windows mới dùng). Không nhúng chữ ký từ app.
+Không set content HTML (phá CID). Không WordEditor.
 """
 
 from __future__ import annotations
@@ -442,9 +439,9 @@ end tell
             "trusted": trusted,
             "needed": True,
             "message": (
-                "Accessibility OK — Semi-Auto (paste Soạn + To/Cc/Subject)."
+                "Accessibility OK — New Mail đang mở → paste → Send."
                 if trusted
-                else "Cần Accessibility để paste đoạn Soạn vào New Mail."
+                else "Cần Accessibility để paste/Send trên cửa sổ New Mail."
             ),
         }
 
@@ -465,7 +462,7 @@ end tell
             "smtp_configured": False,
             "accessibility_trusted": ax,
             "message": (
-                "Sẵn sàng: Legacy + paste Soạn (chữ ký mặc định Outlook)."
+                "Sẵn sàng: Legacy · New Mail mở · paste Soạn · Send."
                 if ax
                 else "Bật Accessibility → Legacy ON → New Mail tay thấy chữ ký mặc định."
             ),
@@ -571,127 +568,14 @@ end tell
             return [p for p in attachment if p is not None]
         return []
 
-    def _resolve_msg_script(self, *, msg_id: str = "", token: str = "") -> str:
-        """Tìm draft: theo id → outgoing → Drafts (Mac hay đẩy compose vào Drafts)."""
-        mid = _esc(msg_id)
-        tok = _esc(token)
-        return f'''
-  set msg to missing value
-  set wantId to "{mid}"
-  set wantTok to "{tok}"
-  if wantId is not "" then
-    try
-      repeat with m in (get outgoing messages)
-        try
-          if (id of m as string) is wantId then
-            set msg to m
-            exit repeat
-          end if
-        end try
-      end repeat
-    end try
-  end if
-  if msg is missing value and wantTok is not "" then
-    try
-      repeat with m in (get outgoing messages)
-        try
-          if (subject of m as string) contains wantTok then
-            set msg to m
-            exit repeat
-          end if
-        end try
-      end repeat
-    end try
-  end if
-  if msg is missing value then
-    try
-      set df to drafts folder
-      set draftMsgs to messages of df
-      if wantId is not "" then
-        repeat with m in draftMsgs
-          try
-            if (id of m as string) is wantId then
-              set msg to m
-              exit repeat
-            end if
-          end try
-        end repeat
-      end if
-      if msg is missing value and wantTok is not "" then
-        repeat with m in draftMsgs
-          try
-            if (subject of m as string) contains wantTok then
-              set msg to m
-              exit repeat
-            end if
-          end try
-        end repeat
-      end if
-    end try
-  end if
-  if msg is missing value then error "Không tìm thấy draft (id/token)"
-'''
+    def _focus_body_then_paste(self) -> None:
+        """
+        Đưa focus vào ô nội dung rồi Cmd+V.
 
-    def _get_draft_content(self, *, msg_id: str = "", token: str = "") -> str:
-        script = f'''
-tell application "Microsoft Outlook"
-{self._resolve_msg_script(msg_id=msg_id, token=token)}
-  try
-    return content of msg as string
-  end try
-  return ""
-end tell
-'''
-        try:
-            return _run_osascript_file(script, timeout=20) or ""
-        except Exception:  # noqa: BLE001
-            return ""
-
-    def _body_pasted(self, marker_id: str, *, msg_id: str = "", token: str = "") -> bool:
-        html = self._get_draft_content(msg_id=msg_id, token=token)
-        return marker_id in (html or "") and len(html_visible_text(html)) >= 20
-
-    def _focus_compose_body_and_paste(self, *, y_ratio: float = 0.30) -> None:
-        """Click vùng body (dưới Subject, trên chữ ký) → Cmd+↑ → Cmd+V."""
-        script = f'''
-tell application "Microsoft Outlook" to activate
-delay 0.1
-tell application "System Events"
-  tell process "Microsoft Outlook"
-    set frontmost to true
-    delay 0.08
-    -- Ưu tiên cửa sổ có title chứa [VT- / New Message / Untitled
-    set win to missing value
-    repeat with w in windows
-      try
-        set t to name of w as string
-        if t contains "[VT-" or t contains "Untitled" or t contains "New Message" or t contains "drafting" then
-          set win to w
-          exit repeat
-        end if
-      end try
-    end repeat
-    if win is missing value then set win to front window
-    set {{wx, wy}} to position of win
-    set {{ww, wh}} to size of win
-    set clickX to (wx + (ww / 2)) as integer
-    set clickY to (wy + (wh * {y_ratio})) as integer
-    key code 53
-    delay 0.04
-    click at {{clickX, clickY}}
-    delay 0.1
-    key code 126 using {{command down}}
-    delay 0.06
-    keystroke "v" using {{command down}}
-    delay 0.35
-  end tell
-end tell
-return "ok"
-'''
-        _run_nsapplescript(script)
-
-    def _send_front_compose_via_ui(self) -> None:
-        """Fallback Send: Cmd+Return trên cửa sổ compose đang mở."""
+        Sau AppleScript gắn To, focus thường còn ở ô To → Cmd+V sẽ dán HTML
+        thành hàng trăm «người nhận» rác (Style Definitions / Dear…).
+        Cách an toàn: click Subject → Tab vào body → mới paste.
+        """
         script = '''
 tell application "Microsoft Outlook" to activate
 delay 0.1
@@ -699,13 +583,78 @@ tell application "System Events"
   tell process "Microsoft Outlook"
     set frontmost to true
     delay 0.08
-    keystroke return using {command down}
-    delay 0.4
+    set win to front window
+    set {wx, wy} to position of win
+    set {ww, wh} to size of win
+    set clickX to (wx + (ww / 2)) as integer
+    -- ~24% từ đỉnh: vùng Subject (dưới To/Cc, trên body)
+    set clickY to (wy + (wh * 0.24)) as integer
+    key code 53
+    delay 0.04
+    click at {clickX, clickY}
+    delay 0.12
+    -- Tab: Subject → Message body (Legacy Outlook Mac)
+    keystroke tab
+    delay 0.18
+    -- Đầu vùng body (trên chữ ký)
+    key code 126 using {command down}
+    delay 0.06
+    keystroke "v" using {command down}
+    delay 0.3
   end tell
 end tell
 return "ok"
 '''
         _run_nsapplescript(script)
+
+    def _reapply_recipients_and_send(
+        self,
+        *,
+        subject: str,
+        to_list: list[str],
+        cc_list: list[str],
+    ) -> None:
+        """
+        Gắn lại To/Cc đúng (xóa rác nếu paste nhầm vào To) rồi Send.
+        Tìm đúng New Mail vừa mở theo Subject — không dùng token [VT-].
+        """
+        recip_block = _applescript_set_recipients(to_list, cc_list)
+        verify_block = _applescript_verify_recipients(to_list, cc_list)
+        want = _esc(subject)
+        script = f'''
+tell application "Microsoft Outlook"
+  set msg to missing value
+  set wantSubj to "{want}"
+  try
+    repeat with m in (get outgoing messages)
+      try
+        if (subject of m as string) is wantSubj then
+          set msg to m
+          exit repeat
+        end if
+      end try
+    end repeat
+  end try
+  if msg is missing value then
+    try
+      repeat with m in (messages of drafts folder)
+        try
+          if (subject of m as string) is wantSubj then
+            set msg to m
+            exit repeat
+          end if
+        end try
+      end repeat
+    end try
+  end if
+  if msg is missing value then error "Không thấy New Mail với subject vừa đặt"
+{recip_block}
+{verify_block}
+  set subject of msg to wantSubj
+  send msg
+end tell
+'''
+        _run_osascript_file(script, timeout=60)
 
     def send(
         self,
@@ -716,8 +665,8 @@ return "ok"
         attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
-        New Mail (chữ ký mặc định) → To/Cc + Subject thật → paste Soạn → Send.
-        Không chờ 'outgoing messages' (Mac hay chỉ hiện trong Drafts) — paste cửa sổ trước.
+        New Mail → To/Cc/Subject → focus body → paste → gắn lại To/Cc → Send.
+        Tránh Cmd+V khi focus còn ở ô To (lỗi To đầy HTML rác).
         """
         from ..clipboard_html import set_mac_clipboard_html, strip_cf_html_headers
 
@@ -750,22 +699,13 @@ return "ok"
         if not to_list:
             raise ValueError("Thiếu / sai địa chỉ To — không gửi.")
 
-        marker_id = f"VTBODY-{uuid.uuid4().hex[:10]}"
         body_for_paste = (
-            f'<div id="{marker_id}" style="margin:0;padding:0">'
-            f'<span style="font-size:0;line-height:0;color:transparent;'
-            f'mso-hide:all">.</span></div>'
             f"{prepared}"
             f'<div style="margin:0;padding:0"><br/></div>'
         )
 
         files = self._normalize_files(attachment)
         prev_app = _frontmost_app_name()
-        # Token chỉ để tìm draft; Subject hiện ngay = subject thật (có token ngắn đầu)
-        token = f"[VT-{uuid.uuid4().hex[:8]}]"
-        # Subject thật ngay từ đầu — token ngắn prefix để tìm; bỏ prefix trước Send
-        display_subject = f"{token} {subject}".strip()[:250]
-
         recip_block = _applescript_set_recipients(to_list, cc_list)
         verify_block = _applescript_verify_recipients(to_list, cc_list)
         att_block = "\n".join(
@@ -777,130 +717,64 @@ return "ok"
         self._close_stuck_vt_drafts()
         set_mac_clipboard_html(body_for_paste)
 
-        # 1) New Mail + To/Cc + Subject (thật, kèm token) — trả về id
+        # 1) New Mail + To/Cc/Subject đúng
         create_script = f'''
 tell application "Microsoft Outlook"
   activate
   set msg to make new outgoing message
 {_account_block(self.config.from_email)}
-  set subject of msg to "{_esc(display_subject)}"
+  set subject of msg to "{_esc(subject)}"
 {recip_block}
 {att_block}
 {verify_block}
   open msg
-  delay 0.5
-  try
-    return id of msg as string
-  end try
-  return "ok"
 end tell
+return "ok"
 '''
-        msg_id = ""
         try:
             try:
-                raw = _run_nsapplescript(create_script)
+                _run_nsapplescript(create_script)
             except Exception:  # noqa: BLE001
-                raw = _run_osascript_file(create_script, timeout=60)
-            msg_id = (raw or "").strip()
-            if msg_id.lower() in {"ok", "missing value", ""}:
-                msg_id = ""
+                _run_osascript_file(create_script, timeout=45)
         except RuntimeError as exc:
-            self._close_stuck_vt_drafts()
             raise RuntimeError(
-                "Outlook Mac không tạo được New Mail.\n"
+                "Không mở được New Mail.\n"
                 f"{exc}\n"
-                "Legacy ON · đã login."
+                "Legacy Outlook = ON · đã login."
             ) from exc
 
-        # Không abort nếu chưa thấy trong outgoing — cửa sổ compose đã mở (user thấy)
+        time.sleep(0.4)
+
+        # 2) Paste vào BODY (Subject→Tab), không paste khi focus còn ở To
+        try:
+            set_mac_clipboard_html(body_for_paste)
+            self._focus_body_then_paste()
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "Không paste được vào ô nội dung New Mail.\n"
+                "Accessibility · cửa sổ New Mail không bị che.\n"
+                f"{exc}"
+            ) from exc
+
         time.sleep(0.25)
 
-        # 2) Paste vào cửa sổ compose đang mở (không phụ thuộc tìm draft)
-        inserted = False
-        last_err: Optional[Exception] = None
-        for ratio in (0.30, 0.26, 0.34, 0.38):
-            try:
-                set_mac_clipboard_html(body_for_paste)
-                self._focus_compose_body_and_paste(y_ratio=ratio)
-                time.sleep(0.2)
-                if self._body_pasted(marker_id, msg_id=msg_id, token=token):
-                    inserted = True
-                    break
-                # Content AS đôi khi trống dù đã paste — tin UI nếu đã thử đủ
-                last_err = RuntimeError("Chưa thấy marker trong content (có thể AS đọc chậm)")
-            except Exception as exc:  # noqa: BLE001
-                last_err = exc
-                continue
-
-        if not inserted:
-            try:
-                set_mac_clipboard_html(body_for_paste)
-                self._focus_compose_body_and_paste(y_ratio=0.30)
-                time.sleep(0.35)
-                if self._body_pasted(marker_id, msg_id=msg_id, token=token):
-                    inserted = True
-            except Exception as exc:  # noqa: BLE001
-                last_err = exc
-
-        body_ok = self._body_pasted(marker_id, msg_id=msg_id, token=token)
-        # AS Mac đôi khi không đọc content Drafts dù UI đã paste — vẫn gửi nếu đã paste
-        if not body_ok and not inserted:
-            self._close_stuck_vt_drafts()
-            detail = f"\nChi tiết: {last_err}" if last_err else ""
-            raise RuntimeError(
-                "Không paste được đoạn Soạn vào New Mail.\n"
-                "Đưa cửa sổ New Mail ra trước · Accessibility đã bật."
-                + detail
-            )
-
-        # 3) Subject sạch (bỏ token) + To/Cc + Send
-        finish_script = f'''
-tell application "Microsoft Outlook"
-{self._resolve_msg_script(msg_id=msg_id, token=token)}
-{recip_block}
-{verify_block}
-  set subject of msg to "{_esc(subject)}"
-  send msg
-end tell
-'''
-        sent = False
+        # 3) Gắn lại To/Cc (xóa rác nếu lỡ dán vào To) + Send
         try:
-            _run_osascript_file(finish_script, timeout=60)
-            sent = True
-        except RuntimeError:
-            # Fallback: set subject nếu tìm được; Send bằng Cmd+Return
-            try:
-                fix_subj = f'''
-tell application "Microsoft Outlook"
-{self._resolve_msg_script(msg_id=msg_id, token=token)}
-{recip_block}
-  set subject of msg to "{_esc(subject)}"
-end tell
-'''
-                _run_osascript_file(fix_subj, timeout=30)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                self._send_front_compose_via_ui()
-                sent = True
-            except Exception as exc:  # noqa: BLE001
-                self._close_stuck_vt_drafts()
-                raise RuntimeError(
-                    "Gửi thất bại (To/Cc/Subject hoặc Send).\n"
-                    f"{exc}\n"
-                    f"To: {', '.join(to_list)}\n"
-                    f"Subject: {subject}\n"
-                    f"Body paste: {'OK' if body_ok else 'chưa chắc (kiểm tra cửa sổ New Mail)'}"
-                ) from exc
+            self._reapply_recipients_and_send(
+                subject=subject, to_list=to_list, cc_list=cc_list
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Gửi thất bại sau khi gắn lại To/Cc.\n"
+                f"{exc}\n"
+                f"To cần: {', '.join(to_list)}\n"
+                f"Subject: {subject}"
+            ) from exc
 
-        if not sent:
-            self._close_stuck_vt_drafts()
-            raise RuntimeError("Không gửi được mail.")
-
-        # Dọn draft VT sót (nếu Send OK sẽ không còn)
-        time.sleep(0.3)
-        self._close_stuck_vt_drafts()
+        time.sleep(0.2)
         _activate_app(prev_app)
+
+
 
 
 

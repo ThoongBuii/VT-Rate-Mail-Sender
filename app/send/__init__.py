@@ -48,7 +48,7 @@ class OutlookDesktopSender:
             self._account_label = label
             return (
                 f"Outlook Legacy sẵn sàng · {label} · "
-                "paste Soạn + To/Cc/Subject"
+                "New Mail mở → paste → Send"
             )
         if system == "Windows":
             try:
