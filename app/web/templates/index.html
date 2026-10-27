@@ -20,13 +20,13 @@
     </div>
     <div class="topbar-right">
       <span id="outlookStatus" class="status">Outlook: chưa kết nối</span>
-      <button id="btnCaptureSig" class="btn ghost" type="button" hidden title="macOS: hướng dẫn Hướng 2 (AMBER + Accessibility)">Mac setup</button>
+      <button id="btnCaptureSig" class="btn ghost" type="button" hidden title="macOS: Legacy + chữ ký AMBER + Accessibility">Mac setup</button>
       <button id="btnOutlook" class="btn primary" type="button">Mở Outlook</button>
     </div>
   </header>
 
   <div id="axBanner" class="ax-banner" hidden role="status">
-    <span id="axBannerText">Cần Accessibility cho Hướng 2 (chèn body trên chữ ký AMBER).</span>
+    <span id="axBannerText">Cần Accessibility cho paste body ~1s (chữ ký AMBER trong Outlook).</span>
     <button id="btnAxOpen" class="btn ghost compact-btn" type="button">Mở Settings</button>
     <button id="btnAxDismiss" class="btn icon-btn" type="button" title="Ẩn">×</button>
   </div>
@@ -192,22 +192,17 @@
 
   <dialog id="sigDialog" class="sig-dialog">
     <div class="sig-dialog-inner">
-      <h3>Mac · gửi đơn giản</h3>
+      <h3>Mac · checklist gửi</h3>
       <ol class="sig-steps">
         <li>Outlook: <strong>Legacy Outlook = ON</strong>.</li>
         <li>Chữ ký <strong>mặc định</strong> account (AMBER) — New Mail tay đã thấy logo.</li>
-        <li>System Settings → Accessibility → bật <strong>VT Rate Mail Sender</strong>.</li>
-        <li>Semi-Auto: gắn To/Cc/Subject + <strong>paste đoạn Soạn</strong> vào New Mail (không nhúng chữ ký từ app).</li>
+        <li>System Settings → Accessibility → bật <strong>VT Rate Mail Sender</strong> (bắt buộc; chỉ bật Terminal thì app Semi-Auto vẫn fail AX). Input Monitoring nếu có.</li>
+        <li>Semi-Auto chuẩn: AS To/Cc/Subject → AX focused Subject → Tab 1 → paste → Send. Giữ Space lúc Outlook nhảy.</li>
       </ol>
-      <p class="muted sig-hint">Soạn chỉ bảng/text — không dán logo. Preview chữ ký trong khung là tuỳ chọn.</p>
-      <div id="sigPasteBox" class="sig-paste" contenteditable="true" data-placeholder="Dán chữ ký vào đây…"></div>
+      <p class="muted sig-hint">Không dán chữ ký vào app — chữ ký sống từ Outlook. Ảnh trong Soạn (data) gửi bình thường.</p>
       <input id="smtpPassword" type="hidden" value="" />
-      <p id="smtpStatusHint" class="muted sig-hint" hidden></p>
       <div class="dialog-actions sig-actions">
-        <button id="btnSigFromClip" class="btn primary" type="button">Dán từ Clipboard</button>
-        <button id="btnSigClear" class="btn ghost" type="button">Xóa khung</button>
-        <button id="btnSigCancel" class="btn ghost" type="button">Đóng</button>
-        <button id="btnSigSave" class="btn ghost" type="button">Lưu preview (tuỳ chọn)</button>
+        <button id="btnSigCancel" class="btn primary" type="button">Đóng</button>
       </div>
     </div>
   </dialog>

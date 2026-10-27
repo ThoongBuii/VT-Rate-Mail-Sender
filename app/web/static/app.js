@@ -706,7 +706,7 @@ function updateAxBanner(s) {
   if (text && need) {
     text.textContent =
       s.accessibility_message ||
-      "Cần Accessibility cho «VT Rate Mail Sender» (Hướng 2: chèn body trên chữ ký AMBER).";
+      "Cần Accessibility cho «VT Rate Mail Sender» (paste body ~1s · chữ ký AMBER trong Outlook).";
   }
 }
 
@@ -761,11 +761,11 @@ function applyState(s, forceHtml = false) {
     const isMac = s.platform === "Darwin";
     btnSig.hidden = !isMac;
     if (isMac) {
-      const ready = !!s.mac_signature_ready;
+      const ready = !!s.accessibility_trusted || !!s.mac_signature_ready;
       btnSig.textContent = ready ? "Mac ✓" : "Mac setup";
       btnSig.title =
         s.mac_signature_message ||
-        "Legacy + AMBER sống + Accessibility → Semi-Auto";
+        "Legacy ON · chữ ký AMBER trong Outlook · Accessibility";
       btnSig.classList.toggle("ok-sig", ready);
     }
   }
@@ -919,86 +919,19 @@ document.getElementById("btnOutlook").onclick = async () => {
   }
 };
 
-/** HTML chữ ký đã nhúng ảnh (từ Clipboard) — không lấy từ contenteditable (dễ mất ảnh). */
-let pendingSigHtml = "";
-
-function sigPasteBox() {
-  return document.getElementById("sigPasteBox");
-}
-
-async function openSigDialog() {
+function openSigDialog() {
   const dlg = document.getElementById("sigDialog");
-  const box = sigPasteBox();
-  if (!dlg || !box) return;
-  pendingSigHtml = "";
-  box.innerHTML = "";
-  const pw = document.getElementById("smtpPassword");
-  if (pw) pw.value = "";
-  try {
-    const prev = await api("/api/outlook/signature-preview");
-    if (prev.preview_html) {
-      pendingSigHtml = prev.preview_html;
-      box.innerHTML = prev.preview_html;
-    }
-  } catch (_) {
-    /* empty */
-  }
+  if (!dlg) return;
   if (typeof dlg.showModal === "function") dlg.showModal();
   else dlg.setAttribute("open", "");
 }
 
 document.getElementById("btnCaptureSig").onclick = () => {
-  openSigDialog().catch((e) => alert(e.message || String(e)));
+  openSigDialog();
 };
 
 document.getElementById("btnSigCancel")?.addEventListener("click", () => {
   document.getElementById("sigDialog")?.close();
-});
-
-document.getElementById("btnSigClear")?.addEventListener("click", () => {
-  pendingSigHtml = "";
-  const box = sigPasteBox();
-  if (box) box.innerHTML = "";
-});
-
-document.getElementById("btnSigFromClip")?.addEventListener("click", async () => {
-  try {
-    const res = await api("/api/outlook/preview-signature-clipboard", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    pendingSigHtml = res.preview_html || "";
-    const box = sigPasteBox();
-    if (box) box.innerHTML = pendingSigHtml;
-    if (!res.image_count) {
-      alert(
-        "Clipboard chưa có ảnh logo.\n" +
-          "Trong Outlook chọn cả chữ ký + logo → Cmd+C → bấm lại «Dán từ Clipboard»."
-      );
-    }
-  } catch (e) {
-    alert(e.message || String(e));
-  }
-});
-
-document.getElementById("btnSigSave")?.addEventListener("click", async () => {
-  try {
-    const html = pendingSigHtml || "";
-    const res = await api("/api/outlook/save-signature", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ html }),
-    });
-    pendingSigHtml = res.preview_html || pendingSigHtml;
-    const box = sigPasteBox();
-    if (box && res.preview_html) box.innerHTML = res.preview_html;
-    await refreshState();
-    alert(res.message || "Đã lưu chữ ký");
-    document.getElementById("sigDialog")?.close();
-  } catch (e) {
-    alert(e.message || String(e));
-  }
 });
 
 const editor = composeEl();

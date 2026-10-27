@@ -859,9 +859,9 @@ def api_send_start():
                 {
                     "ok": False,
                     "error": (
-                        "Mac chưa sẵn sàng gửi (Hướng 2).\n"
+                        "Mac chưa sẵn sàng gửi.\n"
                         "1) Legacy Outlook = ON\n"
-                        "2) New Mail tay phải thấy chữ ký AMBER + logo\n"
+                        "2) New Mail tay thấy chữ ký AMBER + logo (không dán chữ ký vào app)\n"
                         "3) System Settings → Accessibility → bật «VT Rate Mail Sender»"
                     ),
                 }

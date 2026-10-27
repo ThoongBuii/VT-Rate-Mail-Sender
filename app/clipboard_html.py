@@ -515,16 +515,20 @@ def set_mac_clipboard_html(html: str) -> None:
 
     pb = NSPasteboard.generalPasteboard()
     pb.clearContents()
-    ok = pb.setString_forType_(wrapped, NSPasteboardTypeHTML)
-    if not ok:
+    # Nhiều type — Outlook Legacy Mac hay đọc public.html / Apple HTML
+    wrote = False
+    for ptype in (
+        NSPasteboardTypeHTML,
+        "public.html",
+        "Apple HTML pasteboard type",
+    ):
         try:
-            pb.setString_forType_(wrapped, "public.html")
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Không set NSPasteboardTypeHTML: {exc}") from exc
-    try:
-        pb.setString_forType_(wrapped, "public.html")
-    except Exception:  # noqa: BLE001
-        pass
+            if pb.setString_forType_(wrapped, ptype):
+                wrote = True
+        except Exception:  # noqa: BLE001
+            continue
+    if not wrote:
+        raise RuntimeError("Không ghi được HTML lên clipboard (NSPasteboard).")
     plain = re.sub(r"(?is)<br\s*/?>", "\n", fragment)
     plain = re.sub(r"(?is)<[^>]+>", "", plain)
     plain = html_lib.unescape(plain).strip()
