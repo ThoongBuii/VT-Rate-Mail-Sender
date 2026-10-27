@@ -1,8 +1,12 @@
 config.json
 last_template.html
+agency_library.json
 .msal_token_cache.json
 smtp.pass
 logs/
+# Probe AX tạm (không commit)
+scripts/probe_*
+scripts/*.txt
 __pycache__/
 *.pyc
 .Python
