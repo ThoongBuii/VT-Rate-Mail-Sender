@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from ..attach_util import split_attachments
 from ..models import AgencyMail, AppConfig
-from ..sender_smtp import split_emails
+from ..sender_smtp import normalize_to_cc, split_emails
 from ..template_engine import render_body_html, render_subject
 from .mac import MacOutlookSender
 from .windows import WindowsOutlookSender
@@ -18,7 +18,7 @@ class OutlookDesktopSender:
     """
     Facade: App soạn Dear/bảng/remark (UI chung Mac/Windows).
     - Windows: COM New Mail → InsertFile body → chữ ký Outlook tự gắn → Send.
-    - macOS: cache chữ ký 1 lần (ảnh internal) + set content + nhiều đính kèm.
+    - macOS: Legacy ON · New Mail + chữ ký AMBER sống · chèn body → Send.
     """
 
     def __init__(self, config: AppConfig):
@@ -47,8 +47,8 @@ class OutlookDesktopSender:
             self._ready = True
             self._account_label = label
             return (
-                f"Outlook sẵn sàng · {label} · "
-                "New Mail + chữ ký Outlook (Legacy ON)"
+                f"Outlook Legacy sẵn sàng · {label} · "
+                "paste Soạn + To/Cc/Subject"
             )
         if system == "Windows":
             try:
@@ -191,13 +191,15 @@ class OutlookDesktopSender:
         if errors:
             raise ValueError("; ".join(errors))
 
-        to_list = split_emails(mail.account_mail)
+        to_list, cc_list = normalize_to_cc(mail.account_mail, mail.mail_cc)
         if not to_list:
-            raise ValueError("Thiếu Account Mail (To).")
+            raise ValueError(
+                "Thiếu / sai Account Mail (To).\n"
+                f"Giá trị: {mail.account_mail!r}"
+            )
 
         subject = render_subject(mail)
         body_html = render_body_html(mail, "")
-        cc_list = split_emails(mail.mail_cc)
         attachments = self.resolve_attachments(mail)
 
         system = platform.system()

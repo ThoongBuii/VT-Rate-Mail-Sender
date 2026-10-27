@@ -1,11 +1,15 @@
-"""macOS Outlook — user dán chữ ký 1 lần + set content (nhanh như bản cũ).
+"""macOS Outlook Legacy — Hướng 2 tinh gọn.
 
-1) User: Outlook New Mail → Copy chữ ký → app nút «Chữ ký» → Dán/Lưu
-   (ảnh http → data URI internal — hết banner privacy)
-2) Mỗi gửi: merge body + chữ ký cache → set content → Send
-   (nhiều đính kèm, ảnh trong message; không mở cửa sổ)
+Bắt buộc: Legacy Outlook = ON · Accessibility · chữ ký mặc định account (AMBER).
 
-Không tự mở New Mail lấy chữ ký. Legacy Outlook = ON.
+Giống gửi tay:
+1) New Mail → Outlook tự gắn chữ ký (không đụng signature qua AppleScript)
+2) AppleScript chỉ gắn To / Cc / Subject (đúng ô)
+3) Clipboard = đoạn Soạn (không logo) → paste vào body phía trên chữ ký
+4) Kiểm To/Cc + body đã dán → Send
+
+CẤM set content HTML (phá CID → banner + Windows trống).
+Không WordEditor (Windows mới dùng). Không nhúng chữ ký từ app.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import re
 import subprocess
 import tempfile
 import time
+import uuid
 from ctypes import c_bool, c_void_p, cdll
 from pathlib import Path
 from typing import Any, Optional
@@ -21,7 +26,7 @@ from typing import Any, Optional
 from ..models import AppConfig
 from ..outlook_html import prepare_body_html_for_outlook
 from ..paths import user_data_dir
-from .html_merge import html_visible_text, merge_body_with_outlook_signature
+from .html_merge import html_visible_text
 
 
 def signature_dir() -> Path:
@@ -35,6 +40,7 @@ def signature_path() -> Path:
 
 
 def has_ready_signature() -> bool:
+    """Cache chữ ký (tuỳ chọn Preview) — Hướng 2 không bắt buộc khi gửi."""
     p = signature_path()
     if not p.is_file():
         return False
@@ -44,8 +50,142 @@ def has_ready_signature() -> bool:
     return bool(re.search(r"data:image/", html, flags=re.I))
 
 
+def _strip_body_images(html: str) -> str:
+    """Body gửi Hướng 2: bỏ mọi img — logo để chữ ký Outlook gắn."""
+    from ..clipboard_html import strip_cf_html_headers
+
+    s = strip_cf_html_headers(html or "")
+    s = re.sub(r"(?is)<img\b[^>]*>", "", s)
+    s = re.sub(r"(?is)<p[^>]*>\s*(?:&nbsp;|\u00a0|\s|<br\s*/?>)*</p>", "", s)
+    return s.strip()
+
+
+_SIG_NAME = "AMBER"
+
+
 def _esc(s: str) -> str:
     return (s or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _normalize_recipient_lists(
+    to_list: list[str], cc_list: list[str]
+) -> tuple[list[str], list[str]]:
+    """Làm sạch + tách To/Cc trước khi đưa vào AppleScript."""
+    from ..sender_smtp import extract_email, is_valid_email
+
+    def _clean(items: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in items or []:
+            em = extract_email(raw) or (raw or "").strip()
+            if not is_valid_email(em):
+                continue
+            key = em.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(em)
+        return out
+
+    tos = _clean(to_list)
+    to_keys = {e.lower() for e in tos}
+    ccs = [e for e in _clean(cc_list) if e.lower() not in to_keys]
+    return tos, ccs
+
+
+def _applescript_set_recipients(to_list: list[str], cc_list: list[str]) -> str:
+    """
+    Xóa To/Cc cũ → gắn lại từng địa chỉ vào đúng ô.
+    Không đụng content (tránh dán nhầm body vào To).
+    """
+    lines: list[str] = [
+        "  -- To / Cc: xóa hết rồi gắn lại (đúng ô, đúng địa chỉ)",
+        "  try",
+        "    delete (every to recipient of msg)",
+        "  end try",
+        "  try",
+        "    delete (every cc recipient of msg)",
+        "  end try",
+        "  try",
+        "    delete (every bcc recipient of msg)",
+        "  end try",
+    ]
+    for t in to_list:
+        lines.append(
+            "  make new to recipient at msg with properties "
+            f'{{email address:{{address:"{_esc(t)}"}}}}'
+        )
+    for cc in cc_list:
+        lines.append(
+            "  make new cc recipient at msg with properties "
+            f'{{email address:{{address:"{_esc(cc)}"}}}}'
+        )
+    return "\n".join(lines)
+
+
+def _applescript_verify_recipients(to_list: list[str], cc_list: list[str]) -> str:
+    """
+    Kiểm tra To/Cc trước Send.
+
+    Legacy Outlook thường lỗi khi ép `address of email address … as string`
+    (-2700). Vì vậy: bắt buộc đúng số lượng; đọc địa chỉ kiểu mềm
+    (đọc được thì so khớp, không đọc được thì chỉ tin count + lần set của ta).
+    """
+    want_to = len(to_list)
+    want_cc = len(cc_list)
+    checks: list[str] = [
+        "  set toCount to 0",
+        "  set ccCount to 0",
+        "  try",
+        "    set toCount to count of to recipients of msg",
+        "  end try",
+        "  try",
+        "    set ccCount to count of cc recipients of msg",
+        "  end try",
+        f'  if toCount is not {want_to} then error '
+        f'"To sai số lượng: " & toCount & " (cần {want_to})"',
+        f'  if ccCount is not {want_cc} then error '
+        f'"Cc sai số lượng: " & ccCount & " (cần {want_cc})"',
+    ]
+    for i, t in enumerate(to_list, start=1):
+        te = _esc(t)
+        checks.append(
+            f"  -- soft-check To[{i}]\n"
+            "  set tAddr to \"\"\n"
+            "  try\n"
+            f"    set ea to email address of to recipient {i} of msg\n"
+            "    try\n"
+            "      set tAddr to (address of ea) as text\n"
+            "    end try\n"
+            "  end try\n"
+            "  if tAddr is not \"\" then\n"
+            f'    if tAddr does not contain "{te}" then '
+            f'error "To[{i}] sai: " & tAddr & " (cần {te})"\n'
+            f"    if (length of tAddr) > 120 then "
+            f'error "To[{i}] bị dán nhầm nội dung dài"\n'
+            '    if tAddr contains "MicrosoftInternetExplorer" then '
+            'error "To bẩn — hủy"\n'
+            "  end if"
+        )
+    for i, cc in enumerate(cc_list, start=1):
+        ce = _esc(cc)
+        checks.append(
+            f"  -- soft-check Cc[{i}]\n"
+            "  set cAddr to \"\"\n"
+            "  try\n"
+            f"    set ea to email address of cc recipient {i} of msg\n"
+            "    try\n"
+            "      set cAddr to (address of ea) as text\n"
+            "    end try\n"
+            "  end try\n"
+            "  if cAddr is not \"\" then\n"
+            f'    if cAddr does not contain "{ce}" then '
+            f'error "Cc[{i}] sai: " & cAddr & " (cần {ce})"\n'
+            f"    if (length of cAddr) > 120 then "
+            f'error "Cc[{i}] bị dán nhầm nội dung dài"\n'
+            "  end if"
+        )
+    return "\n".join(checks)
 
 
 def _account_block(from_email: str) -> str:
@@ -243,7 +383,34 @@ end tell
             emails.append(em)
         return emails
 
+    def _close_stuck_vt_drafts(self) -> None:
+        """Xóa draft [VT-…] còn sót từ lần paste New Mail cũ (tránh treo)."""
+        try:
+            _run_osascript_file(
+                '''
+tell application "Microsoft Outlook"
+  try
+    repeat with m in (get outgoing messages)
+      try
+        set s to subject of m as string
+        if s starts with "[VT-" then
+          try
+            delete m
+          end try
+        end if
+      end try
+    end repeat
+  end try
+end tell
+''',
+                timeout=45,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     def open_outlook(self) -> str:
+        """Legacy ON · Accessibility · AppleScript chạy được."""
+        ensure_assistive_access(prompt=True)
         subprocess.run(["open", "-a", "Microsoft Outlook"], check=False)
         result = subprocess.run(
             ["osascript", "-l", "JavaScript", "-e", 'Application("Microsoft Outlook").name();'],
@@ -255,20 +422,30 @@ end tell
             err = (result.stderr or result.stdout or "").strip()
             raise RuntimeError(
                 "Không điều khiển được Microsoft Outlook trên Mac.\n"
-                "Bật Legacy Outlook = ON · đã đăng nhập.\n"
+                "Bật **Legacy Outlook = ON** (New Outlook tắt) · đã đăng nhập.\n"
                 f"Chi tiết: {err or 'osascript failed'}"
+            )
+        if not ensure_assistive_access(prompt=False):
+            raise RuntimeError(
+                "Cần Accessibility cho «VT Rate Mail Sender».\n"
+                "System Settings → Privacy & Security → Accessibility → bật app.\n"
+                "(Dán body phía trên chữ ký AMBER — hết banner privacy.)"
             )
         accounts = self._list_outlook_accounts()
         if accounts:
             return accounts[0]
-        return "tài khoản mặc định trên máy"
+        return self.config.from_email or "tài khoản mặc định trên máy"
 
     def accessibility_status(self) -> dict[str, Any]:
         trusted = ensure_assistive_access(prompt=False)
         return {
             "trusted": trusted,
-            "needed": False,
-            "message": "Không bắt buộc — chữ ký do bạn dán thủ công.",
+            "needed": True,
+            "message": (
+                "Accessibility OK — Semi-Auto (paste Soạn + To/Cc/Subject)."
+                if trusted
+                else "Cần Accessibility để paste đoạn Soạn vào New Mail."
+            ),
         }
 
     def ensure_accessibility(self, *, prompt: bool = True) -> dict[str, Any]:
@@ -276,18 +453,21 @@ end tell
         return self.accessibility_status()
 
     def signature_status(self) -> dict[str, Any]:
-        ok = has_ready_signature()
+        """Semi-Auto: cần Accessibility. Cache chữ ký chỉ tuỳ chọn Preview."""
+        ax = ensure_assistive_access(prompt=False)
+        cached = has_ready_signature()
         return {
-            "ready": ok,
-            "path": str(signature_path()) if ok else "",
-            "has_file": ok,
-            "has_images": ok,
-            "cached": ok,
-            "accessibility_trusted": ensure_assistive_access(prompt=False),
+            "ready": ax,
+            "path": str(signature_path()) if cached else "",
+            "has_file": cached,
+            "has_images": cached,
+            "cached": cached,
+            "smtp_configured": False,
+            "accessibility_trusted": ax,
             "message": (
-                "Đã có chữ ký (ảnh internal). Có thể Semi-Auto."
-                if ok
-                else "Chưa có chữ ký — bấm «Chữ ký» → dán chữ ký Outlook vào rồi Lưu."
+                "Sẵn sàng: Legacy + paste Soạn (chữ ký mặc định Outlook)."
+                if ax
+                else "Bật Accessibility → Legacy ON → New Mail tay thấy chữ ký mặc định."
             ),
         }
 
@@ -343,20 +523,29 @@ end tell
         if len(html_visible_text(prepared)) < 30:
             raise RuntimeError(
                 "Chữ ký quá ngắn / clipboard trống.\n"
-                "Outlook → New Mail → chọn chữ ký + logo → Cmd+C → «Dán từ Clipboard»."
+                "Legacy Outlook → New Mail → chọn chữ ký + logo → Cmd+C → «Dán từ Clipboard»."
+            )
+        # New Outlook hay copy ra signature_NNNN (ảnh vỡ) — từ chối lưu
+        if re.search(r"signature_\d+", prepared, flags=re.I) and not re.search(
+            r"data:image/", prepared, flags=re.I
+        ):
+            raise RuntimeError(
+                "Clipboard chữ ký hỏng (signature_* / ảnh ?).\n"
+                "New Outlook không copy được logo.\n"
+                "Bật Legacy Outlook = ON → New Mail → chọn cả logo → Cmd+C lại."
             )
         n_img = len(re.findall(r"data:image/", prepared, flags=re.I))
         if n_img < 1:
             raise RuntimeError(
                 "Chữ ký không có ảnh nhúng (logo).\n"
-                "Hãy chọn cả vùng chữ ký có logo trong Outlook rồi Cmd+C lại.\n"
+                "Legacy ON → chọn cả vùng chữ ký có logo → Cmd+C.\n"
                 "Không dùng Cmd+V vào khung nếu thấy icon ảnh vỡ."
             )
 
         signature_path().write_text(prepared, encoding="utf-8")
         return (
-            f"Đã lưu chữ ký ({len(prepared)} ký tự, {n_img} ảnh internal). "
-            "Gửi sẽ không còn banner privacy. Có thể Semi-Auto."
+            f"Đã lưu chữ ký preview ({len(prepared)} ký tự, {n_img} ảnh). "
+            "Semi-Auto dùng chữ ký AMBER sống trong Outlook (Hướng 2)."
         )
 
     def preview_signature_from_clipboard(self) -> str:
@@ -382,6 +571,142 @@ end tell
             return [p for p in attachment if p is not None]
         return []
 
+    def _resolve_msg_script(self, *, msg_id: str = "", token: str = "") -> str:
+        """Tìm draft: theo id → outgoing → Drafts (Mac hay đẩy compose vào Drafts)."""
+        mid = _esc(msg_id)
+        tok = _esc(token)
+        return f'''
+  set msg to missing value
+  set wantId to "{mid}"
+  set wantTok to "{tok}"
+  if wantId is not "" then
+    try
+      repeat with m in (get outgoing messages)
+        try
+          if (id of m as string) is wantId then
+            set msg to m
+            exit repeat
+          end if
+        end try
+      end repeat
+    end try
+  end if
+  if msg is missing value and wantTok is not "" then
+    try
+      repeat with m in (get outgoing messages)
+        try
+          if (subject of m as string) contains wantTok then
+            set msg to m
+            exit repeat
+          end if
+        end try
+      end repeat
+    end try
+  end if
+  if msg is missing value then
+    try
+      set df to drafts folder
+      set draftMsgs to messages of df
+      if wantId is not "" then
+        repeat with m in draftMsgs
+          try
+            if (id of m as string) is wantId then
+              set msg to m
+              exit repeat
+            end if
+          end try
+        end repeat
+      end if
+      if msg is missing value and wantTok is not "" then
+        repeat with m in draftMsgs
+          try
+            if (subject of m as string) contains wantTok then
+              set msg to m
+              exit repeat
+            end if
+          end try
+        end repeat
+      end if
+    end try
+  end if
+  if msg is missing value then error "Không tìm thấy draft (id/token)"
+'''
+
+    def _get_draft_content(self, *, msg_id: str = "", token: str = "") -> str:
+        script = f'''
+tell application "Microsoft Outlook"
+{self._resolve_msg_script(msg_id=msg_id, token=token)}
+  try
+    return content of msg as string
+  end try
+  return ""
+end tell
+'''
+        try:
+            return _run_osascript_file(script, timeout=20) or ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _body_pasted(self, marker_id: str, *, msg_id: str = "", token: str = "") -> bool:
+        html = self._get_draft_content(msg_id=msg_id, token=token)
+        return marker_id in (html or "") and len(html_visible_text(html)) >= 20
+
+    def _focus_compose_body_and_paste(self, *, y_ratio: float = 0.30) -> None:
+        """Click vùng body (dưới Subject, trên chữ ký) → Cmd+↑ → Cmd+V."""
+        script = f'''
+tell application "Microsoft Outlook" to activate
+delay 0.1
+tell application "System Events"
+  tell process "Microsoft Outlook"
+    set frontmost to true
+    delay 0.08
+    -- Ưu tiên cửa sổ có title chứa [VT- / New Message / Untitled
+    set win to missing value
+    repeat with w in windows
+      try
+        set t to name of w as string
+        if t contains "[VT-" or t contains "Untitled" or t contains "New Message" or t contains "drafting" then
+          set win to w
+          exit repeat
+        end if
+      end try
+    end repeat
+    if win is missing value then set win to front window
+    set {{wx, wy}} to position of win
+    set {{ww, wh}} to size of win
+    set clickX to (wx + (ww / 2)) as integer
+    set clickY to (wy + (wh * {y_ratio})) as integer
+    key code 53
+    delay 0.04
+    click at {{clickX, clickY}}
+    delay 0.1
+    key code 126 using {{command down}}
+    delay 0.06
+    keystroke "v" using {{command down}}
+    delay 0.35
+  end tell
+end tell
+return "ok"
+'''
+        _run_nsapplescript(script)
+
+    def _send_front_compose_via_ui(self) -> None:
+        """Fallback Send: Cmd+Return trên cửa sổ compose đang mở."""
+        script = '''
+tell application "Microsoft Outlook" to activate
+delay 0.1
+tell application "System Events"
+  tell process "Microsoft Outlook"
+    set frontmost to true
+    delay 0.08
+    keystroke return using {command down}
+    delay 0.4
+  end tell
+end tell
+return "ok"
+'''
+        _run_nsapplescript(script)
+
     def send(
         self,
         to_list: list[str],
@@ -391,116 +716,193 @@ end tell
         attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
-        Cache chữ ký + merge → ảnh data: đổi sang CID file đính kèm → set content → Send.
-
-        Lý do: Outlook Mac `set content` với data:image thường biến thành ảnh ngoài
-        → banner «external images were not downloaded» cho người nhận.
+        New Mail (chữ ký mặc định) → To/Cc + Subject thật → paste Soạn → Send.
+        Không chờ 'outgoing messages' (Mac hay chỉ hiện trong Drafts) — paste cửa sổ trước.
         """
-        from ..clipboard_html import strip_cf_html_headers
-        from .mac_inline import prepare_mac_send_html
+        from ..clipboard_html import set_mac_clipboard_html, strip_cf_html_headers
 
-        if not has_ready_signature():
+        if not ensure_assistive_access(prompt=True):
             raise RuntimeError(
-                "Chưa có chữ ký Mac.\n"
-                "Bấm «Chữ ký» → Copy chữ ký trong Outlook → Dán / Lưu,\n"
-                "rồi Semi-Auto."
+                "Cần Accessibility cho «VT Rate Mail Sender».\n"
+                "System Settings → Privacy & Security → Accessibility → bật app."
             )
 
         prepared = prepare_body_html_for_outlook(body_html)
         prepared = strip_cf_html_headers(prepared)
+        prepared = _strip_body_images(prepared)
         if not (prepared or "").strip():
             raise ValueError("Nội dung mail trống — không gửi.")
-        if not to_list:
-            raise ValueError("Thiếu địa chỉ To — không gửi.")
+        if len(html_visible_text(prepared)) < 20:
+            raise ValueError(
+                "Body quá ngắn sau khi bỏ ảnh.\n"
+                "Soạn chỉ bảng/text — logo để chữ ký mặc định Outlook."
+            )
+        if re.search(r"(?is)<img\b", prepared) or re.search(
+            r"(?i)(?:src|background)\s*=\s*[\"']?(?:data:|https?:|file:)",
+            prepared,
+        ):
+            raise ValueError(
+                "Body còn ảnh / URL ảnh.\n"
+                "Xóa logo khỏi Soạn; New Mail sẽ tự có chữ ký AMBER."
+            )
 
-        sig = self.load_signature_html()
-        full = merge_body_with_outlook_signature(prepared, sig)
-        try:
-            full = _prepare_signature_html(full)
-        except RuntimeError as exc:
-            raise RuntimeError(
-                "Mail còn ảnh ngoài — không gửi (tránh banner privacy cho người nhận).\n"
-                f"{exc}"
-            ) from exc
-        if len(html_visible_text(full)) < 80:
-            raise RuntimeError("Nội dung mail sau merge quá ngắn — hủy gửi.")
+        to_list, cc_list = _normalize_recipient_lists(to_list, cc_list or [])
+        if not to_list:
+            raise ValueError("Thiếu / sai địa chỉ To — không gửi.")
+
+        marker_id = f"VTBODY-{uuid.uuid4().hex[:10]}"
+        body_for_paste = (
+            f'<div id="{marker_id}" style="margin:0;padding:0">'
+            f'<span style="font-size:0;line-height:0;color:transparent;'
+            f'mso-hide:all">.</span></div>'
+            f"{prepared}"
+            f'<div style="margin:0;padding:0"><br/></div>'
+        )
 
         files = self._normalize_files(attachment)
         prev_app = _frontmost_app_name()
+        # Token chỉ để tìm draft; Subject hiện ngay = subject thật (có token ngắn đầu)
+        token = f"[VT-{uuid.uuid4().hex[:8]}]"
+        # Subject thật ngay từ đầu — token ngắn prefix để tìm; bỏ prefix trước Send
+        display_subject = f"{token} {subject}".strip()[:250]
 
-        to_block = "\n".join(
-            f'  make new to recipient at msg with properties {{email address:{{address:"{_esc(t)}"}}}}'
-            for t in to_list
-        )
-        cc_block = "\n".join(
-            f'  make new cc recipient at msg with properties {{email address:{{address:"{_esc(cc)}"}}}}'
-            for cc in cc_list
-        )
-        user_att_block = "\n".join(
-            f'  make new attachment at msg with properties {{file:POSIX file "{_esc(str(p.resolve()))}"}}'
+        recip_block = _applescript_set_recipients(to_list, cc_list)
+        verify_block = _applescript_verify_recipients(to_list, cc_list)
+        att_block = "\n".join(
+            f'  make new attachment at msg with properties '
+            f'{{file:POSIX file "{_esc(str(p.resolve()))}"}}'
             for p in files
         )
 
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            send_html, cid_parts = prepare_mac_send_html(full, tmp_path / "cid_imgs")
-            full_path = tmp_path / "full.html"
-            full_path.write_text(send_html, encoding="utf-8")
+        self._close_stuck_vt_drafts()
+        set_mac_clipboard_html(body_for_paste)
 
-            # Đính ảnh CID trước (tên file = phần trước @ của cid) rồi mới set content
-            inline_att_lines: list[str] = []
-            for cid, img_path in cid_parts:
-                # cid vt0@vt.local → name vt0.png khớp file
-                name = img_path.name
-                inline_att_lines.append(
-                    "  try\n"
-                    f'    make new attachment at msg with properties '
-                    f'{{file:POSIX file "{_esc(str(img_path.resolve()))}", name:"{_esc(name)}"}}\n'
-                    "  end try"
-                )
-                # Một số bản Outlook khớp cid theo name không có đuôi
-                stem_cid = cid.split("@")[0]
-                if name != f"{stem_cid}{img_path.suffix}":
-                    pass
-            # HTML dùng cid:vtN@vt.local — đổi thêm alias cid:vtN.png cho khớp name
-            for cid, img_path in cid_parts:
-                send_html = send_html.replace(
-                    f"cid:{cid}",
-                    f"cid:{img_path.name}",
-                )
-            full_path.write_text(send_html, encoding="utf-8")
-
-            inline_att_block = "\n".join(inline_att_lines)
-
-            script = f'''
-set fullPath to "{full_path}"
-set fullText to read (POSIX file fullPath) as «class utf8»
-if fullText is "" then error "HTML trống"
-
+        # 1) New Mail + To/Cc + Subject (thật, kèm token) — trả về id
+        create_script = f'''
 tell application "Microsoft Outlook"
+  activate
   set msg to make new outgoing message
 {_account_block(self.config.from_email)}
-  set subject of msg to "{_esc(subject)}"
-{to_block}
-{cc_block}
-{inline_att_block}
-  set content of msg to fullText
-{user_att_block}
-  set toCount to 0
+  set subject of msg to "{_esc(display_subject)}"
+{recip_block}
+{att_block}
+{verify_block}
+  open msg
+  delay 0.5
   try
-    set toCount to count of (to recipients of msg)
+    return id of msg as string
   end try
-  if toCount < 1 then error "To trống — hủy gửi"
+  return "ok"
+end tell
+'''
+        msg_id = ""
+        try:
+            try:
+                raw = _run_nsapplescript(create_script)
+            except Exception:  # noqa: BLE001
+                raw = _run_osascript_file(create_script, timeout=60)
+            msg_id = (raw or "").strip()
+            if msg_id.lower() in {"ok", "missing value", ""}:
+                msg_id = ""
+        except RuntimeError as exc:
+            self._close_stuck_vt_drafts()
+            raise RuntimeError(
+                "Outlook Mac không tạo được New Mail.\n"
+                f"{exc}\n"
+                "Legacy ON · đã login."
+            ) from exc
+
+        # Không abort nếu chưa thấy trong outgoing — cửa sổ compose đã mở (user thấy)
+        time.sleep(0.25)
+
+        # 2) Paste vào cửa sổ compose đang mở (không phụ thuộc tìm draft)
+        inserted = False
+        last_err: Optional[Exception] = None
+        for ratio in (0.30, 0.26, 0.34, 0.38):
+            try:
+                set_mac_clipboard_html(body_for_paste)
+                self._focus_compose_body_and_paste(y_ratio=ratio)
+                time.sleep(0.2)
+                if self._body_pasted(marker_id, msg_id=msg_id, token=token):
+                    inserted = True
+                    break
+                # Content AS đôi khi trống dù đã paste — tin UI nếu đã thử đủ
+                last_err = RuntimeError("Chưa thấy marker trong content (có thể AS đọc chậm)")
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                continue
+
+        if not inserted:
+            try:
+                set_mac_clipboard_html(body_for_paste)
+                self._focus_compose_body_and_paste(y_ratio=0.30)
+                time.sleep(0.35)
+                if self._body_pasted(marker_id, msg_id=msg_id, token=token):
+                    inserted = True
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+
+        body_ok = self._body_pasted(marker_id, msg_id=msg_id, token=token)
+        # AS Mac đôi khi không đọc content Drafts dù UI đã paste — vẫn gửi nếu đã paste
+        if not body_ok and not inserted:
+            self._close_stuck_vt_drafts()
+            detail = f"\nChi tiết: {last_err}" if last_err else ""
+            raise RuntimeError(
+                "Không paste được đoạn Soạn vào New Mail.\n"
+                "Đưa cửa sổ New Mail ra trước · Accessibility đã bật."
+                + detail
+            )
+
+        # 3) Subject sạch (bỏ token) + To/Cc + Send
+        finish_script = f'''
+tell application "Microsoft Outlook"
+{self._resolve_msg_script(msg_id=msg_id, token=token)}
+{recip_block}
+{verify_block}
+  set subject of msg to "{_esc(subject)}"
   send msg
 end tell
 '''
+        sent = False
+        try:
+            _run_osascript_file(finish_script, timeout=60)
+            sent = True
+        except RuntimeError:
+            # Fallback: set subject nếu tìm được; Send bằng Cmd+Return
             try:
-                _run_osascript_file(script, timeout=120)
-            except RuntimeError as exc:
+                fix_subj = f'''
+tell application "Microsoft Outlook"
+{self._resolve_msg_script(msg_id=msg_id, token=token)}
+{recip_block}
+  set subject of msg to "{_esc(subject)}"
+end tell
+'''
+                _run_osascript_file(fix_subj, timeout=30)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                self._send_front_compose_via_ui()
+                sent = True
+            except Exception as exc:  # noqa: BLE001
+                self._close_stuck_vt_drafts()
                 raise RuntimeError(
-                    "Outlook Mac gửi thất bại.\n"
+                    "Gửi thất bại (To/Cc/Subject hoặc Send).\n"
                     f"{exc}\n"
-                    "Legacy Outlook = ON · đã lưu chữ ký (ảnh internal)."
+                    f"To: {', '.join(to_list)}\n"
+                    f"Subject: {subject}\n"
+                    f"Body paste: {'OK' if body_ok else 'chưa chắc (kiểm tra cửa sổ New Mail)'}"
                 ) from exc
 
+        if not sent:
+            self._close_stuck_vt_drafts()
+            raise RuntimeError("Không gửi được mail.")
+
+        # Dọn draft VT sót (nếu Send OK sẽ không còn)
+        time.sleep(0.3)
+        self._close_stuck_vt_drafts()
         _activate_app(prev_app)
+
+
+
+
+

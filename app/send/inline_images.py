@@ -214,10 +214,22 @@ def write_body_htm_for_insert(html: str, pictures: list[InlinePicture]) -> Path:
     name = f"vt_body_{uuid.uuid4().hex[:12]}.htm"
     path = store / name
     body = (html or "").strip()
-    # Fragment đủ cho Word — tránh wrapper phức tạp làm lệch layout
+    # CSS cố định theo pt — không phụ thuộc zoom/DPI màn hình WebView hay laptop
     doc = (
         "<!DOCTYPE html>\n"
-        '<html><head><meta charset="utf-8"></head>'
+        "<html xmlns:o='urn:schemas-microsoft-com:office:office' "
+        "xmlns:w='urn:schemas-microsoft-com:office:word' "
+        "xmlns='http://www.w3.org/TR/REC-html40'>\n"
+        "<head><meta charset='utf-8'>\n"
+        "<style>\n"
+        "<!--\n"
+        "body { margin:0; padding:0; font-size:12pt; }\n"
+        "table { border-collapse:collapse; mso-table-lspace:0pt; mso-table-rspace:0pt; }\n"
+        "td, th { vertical-align:middle; }\n"
+        "img { border:0; outline:none; text-decoration:none; }\n"
+        "-->\n"
+        "</style>\n"
+        "</head>\n"
         f"<body>{body}</body></html>\n"
     )
     path.write_text(doc, encoding="utf-8", errors="replace")

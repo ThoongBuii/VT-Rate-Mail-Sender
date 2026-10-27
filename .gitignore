@@ -1,6 +1,7 @@
 config.json
 last_template.html
 .msal_token_cache.json
+smtp.pass
 logs/
 __pycache__/
 *.pyc

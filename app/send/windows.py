@@ -11,6 +11,7 @@ Không đổi đường gửi mail — chỉ tách UI để không cướp chat/
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Any, Optional, Sequence, Union
@@ -178,8 +179,27 @@ class WindowsOutlookSender:
         """New Mail (ẩn UI) → InsertFile body+ảnh → Send — không cướp focus user."""
         import win32com.client  # type: ignore
 
+        from ..sender_smtp import extract_email, is_valid_email
+
+        def _clean(items: list[str]) -> list[str]:
+            out: list[str] = []
+            seen: set[str] = set()
+            for raw in items or []:
+                em = extract_email(raw) or (raw or "").strip()
+                if not is_valid_email(em):
+                    continue
+                key = em.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(em)
+            return out
+
+        to_list = _clean(to_list)
+        to_keys = {e.lower() for e in to_list}
+        cc_list = [e for e in _clean(list(cc_list or [])) if e.lower() not in to_keys]
         if not to_list:
-            raise ValueError("Thiếu địa chỉ To — không gửi.")
+            raise ValueError("Thiếu / sai địa chỉ To — không gửi.")
 
         prepared = prepare_body_html_for_outlook(body_html)
         if not (prepared or "").strip():
@@ -224,6 +244,16 @@ class WindowsOutlookSender:
             mail_item.To = "; ".join(to_list)
             mail_item.CC = "; ".join(cc_list) if cc_list else ""
             mail_item.Subject = subject
+            # Xác minh To/Cc trước khi chèn body
+            got_to = [
+                extract_email(p) or p.strip()
+                for p in re.split(r"[;,]+", str(mail_item.To or ""))
+                if (extract_email(p) or p.strip())
+            ]
+            if len(got_to) < len(to_list):
+                raise RuntimeError(
+                    f"To chưa gắn đủ trong Outlook: {mail_item.To!r} (cần {to_list})"
+                )
             reassert_user_focus(isolate)
 
             # WordEditor vẫn chạy trên Inspector ẩn (chưa Disable)

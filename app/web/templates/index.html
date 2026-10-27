@@ -20,13 +20,13 @@
     </div>
     <div class="topbar-right">
       <span id="outlookStatus" class="status">Outlook: chưa kết nối</span>
-      <button id="btnCaptureSig" class="btn ghost" type="button" hidden title="macOS: dán chữ ký Outlook vào app (1 lần)">Chữ ký</button>
+      <button id="btnCaptureSig" class="btn ghost" type="button" hidden title="macOS: hướng dẫn Hướng 2 (AMBER + Accessibility)">Mac setup</button>
       <button id="btnOutlook" class="btn primary" type="button">Mở Outlook</button>
     </div>
   </header>
 
   <div id="axBanner" class="ax-banner" hidden role="status">
-    <span id="axBannerText">Cần bật Accessibility cho app để gửi mail mượt trên Mac.</span>
+    <span id="axBannerText">Cần Accessibility cho Hướng 2 (chèn body trên chữ ký AMBER).</span>
     <button id="btnAxOpen" class="btn ghost compact-btn" type="button">Mở Settings</button>
     <button id="btnAxDismiss" class="btn icon-btn" type="button" title="Ẩn">×</button>
   </div>
@@ -158,12 +158,13 @@
         </div>
         <div class="preview-meta" id="previewMeta"></div>
         <iframe id="previewFrame" class="preview-frame" title="Preview mail"></iframe>
-        <div class="send-row">
-          <button id="btnStart" class="btn dark" type="button">▶ Semi-Auto</button>
-          <button id="btnPause" class="btn warn" type="button" disabled>⏸ Pause</button>
-          <button id="btnStop" class="btn danger" type="button" disabled>⏹ Stop</button>
-          <button id="btnBackCompose" class="btn ghost" type="button">← Soạn lại</button>
-        </div>
+      </div>
+      <!-- Hàng nút ngoài vùng cuộn — luôn thấy trên màn thấp / laptop -->
+      <div class="send-row send-row-actions">
+        <button id="btnStart" class="btn dark" type="button">▶ Semi-Auto</button>
+        <button id="btnPause" class="btn warn" type="button" disabled>⏸ Pause</button>
+        <button id="btnStop" class="btn danger" type="button" disabled>⏹ Stop</button>
+        <button id="btnBackCompose" class="btn ghost" type="button">← Soạn lại</button>
       </div>
       <div class="preview-status">
         <div class="progress-wrap">
@@ -191,19 +192,22 @@
 
   <dialog id="sigDialog" class="sig-dialog">
     <div class="sig-dialog-inner">
-      <h3>Chữ ký Outlook (macOS)</h3>
+      <h3>Mac · gửi đơn giản</h3>
       <ol class="sig-steps">
-        <li>Mở <strong>Outlook</strong> → New Mail (hiện chữ ký + logo).</li>
-        <li>Chọn <strong>cả</strong> vùng chữ ký (có logo) → <kbd>Cmd+C</kbd>.</li>
-        <li>App → <strong>Dán từ Clipboard</strong> → xem logo hiện đủ → <strong>Lưu chữ ký</strong>.</li>
+        <li>Outlook: <strong>Legacy Outlook = ON</strong>.</li>
+        <li>Chữ ký <strong>mặc định</strong> account (AMBER) — New Mail tay đã thấy logo.</li>
+        <li>System Settings → Accessibility → bật <strong>VT Rate Mail Sender</strong>.</li>
+        <li>Semi-Auto: gắn To/Cc/Subject + <strong>paste đoạn Soạn</strong> vào New Mail (không nhúng chữ ký từ app).</li>
       </ol>
-      <p class="muted sig-hint">Không dùng Cmd+V vào khung nếu thấy ảnh vỡ — dễ còn link ngoài → banner privacy.</p>
+      <p class="muted sig-hint">Soạn chỉ bảng/text — không dán logo. Preview chữ ký trong khung là tuỳ chọn.</p>
       <div id="sigPasteBox" class="sig-paste" contenteditable="true" data-placeholder="Dán chữ ký vào đây…"></div>
+      <input id="smtpPassword" type="hidden" value="" />
+      <p id="smtpStatusHint" class="muted sig-hint" hidden></p>
       <div class="dialog-actions sig-actions">
         <button id="btnSigFromClip" class="btn primary" type="button">Dán từ Clipboard</button>
         <button id="btnSigClear" class="btn ghost" type="button">Xóa khung</button>
         <button id="btnSigCancel" class="btn ghost" type="button">Đóng</button>
-        <button id="btnSigSave" class="btn success" type="button">Lưu chữ ký</button>
+        <button id="btnSigSave" class="btn ghost" type="button">Lưu preview (tuỳ chọn)</button>
       </div>
     </div>
   </dialog>

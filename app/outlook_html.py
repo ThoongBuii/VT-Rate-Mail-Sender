@@ -41,6 +41,29 @@ def convert_px_font_sizes_to_pt(html: str) -> str:
     return re.sub(r"font-size\s*:\s*(\d+(?:\.\d+)?)px", _repl, html or "", flags=re.I)
 
 
+def convert_px_widths_to_pt(html: str) -> str:
+    """
+    Đổi width/height px → pt (96dpi cố định).
+
+    Laptop Windows hay scale 125%/150%: CF_HTML / contenteditable mang px đã
+    «phóng» theo DPI → Word InsertFile hiểu lệch → bảng nhảy cột so với desktop 100%.
+    Chuẩn hóa về pt (đơn vị Word) giúp đồng bộ giữa máy.
+    """
+
+    def _style_repl(m: re.Match[str]) -> str:
+        prop, num = m.group(1), float(m.group(2))
+        pt = round(num * 72 / 96, 1)
+        pt_s = str(int(pt)) if pt == int(pt) else str(pt)
+        return f"{prop}:{pt_s}pt"
+
+    return re.sub(
+        r"(?i)(?<![-\w])(width|height|min-width|max-width|min-height|max-height)"
+        r"\s*:\s*(\d+(?:\.\d+)?)px",
+        _style_repl,
+        html or "",
+    )
+
+
 def harden_tables_for_outlook(html: str) -> str:
     """Giữ layout bảng khi Outlook Word render lại HTMLBody — không ép font."""
 
@@ -50,6 +73,10 @@ def harden_tables_for_outlook(html: str) -> str:
         sm = re.search(r"""\sstyle\s*=\s*["']([^"']*)["']""", tag, flags=re.I)
         if sm:
             style = sm.group(1)
+        # Bỏ max-width:% / width:100% — Word hay co bảng khác nhau theo DPI cửa sổ
+        style = re.sub(r"(?i)(?:^|;)\s*max-width\s*:\s*100%\s*;?", ";", style or "")
+        style = re.sub(r"(?i)(?:^|;)\s*width\s*:\s*100%\s*;?", ";", style)
+        style = re.sub(r";{2,}", ";", style).strip("; ").strip()
         add = (
             "border-collapse:collapse;"
             "border-spacing:0;"
@@ -164,11 +191,12 @@ def harden_images_for_outlook(html: str) -> str:
 
 
 def prepare_body_html_for_outlook(html: str) -> str:
-    """Pipeline trước khi chèn vào New Mail Outlook."""
+    """Pipeline trước khi chèn vào New Mail Outlook (đồng bộ desktop/laptop DPI)."""
     s = (html or "").strip()
     if not s:
         return s
     s = convert_px_font_sizes_to_pt(s)
+    s = convert_px_widths_to_pt(s)
     s = harden_tables_for_outlook(s)
     s = harden_images_for_outlook(s)
     s = ensure_inline_fonts(s)

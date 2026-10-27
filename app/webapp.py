@@ -231,6 +231,10 @@ class AppState:
             "mac_signature_cached": bool(mac_sig.get("cached") or mac_sig.get("has_file")),
             "mac_signature_has_file": bool(mac_sig.get("has_file")),
             "mac_signature_message": mac_sig.get("message") or "",
+            "smtp_configured": bool(mac_sig.get("smtp_configured")),
+            "send_mode": (
+                "legacy_amber_paste" if platform.system() == "Darwin" else "outlook"
+            ),
             "subject": self.subject,
             "attachment": self.attachment,
             "attachments": split_attachments(self.attachment),
@@ -393,6 +397,57 @@ def api_outlook_signature_preview():
 @flask_app.get("/api/outlook/signature-status")
 def api_outlook_signature_status():
     return jsonify({"ok": True, **STATE.sender.mac_signature_status()})
+
+
+@flask_app.get("/api/smtp/status")
+def api_smtp_status():
+    from .smtp_creds import has_smtp_password
+
+    cfg = STATE.config
+    return jsonify(
+        {
+            "ok": True,
+            "configured": has_smtp_password(),
+            "host": cfg.smtp_host,
+            "port": cfg.smtp_port,
+            "ssl": cfg.smtp_ssl,
+            "username": cfg.smtp_username or cfg.from_email,
+            "from_email": cfg.from_email,
+        }
+    )
+
+
+@flask_app.post("/api/smtp/password")
+def api_smtp_password():
+    """Lưu mật khẩu SMTP local (không ghi config.json)."""
+    try:
+        from .smtp_creds import set_smtp_password
+
+        data = request.get_json(force=True, silent=True) or {}
+        password = str(data.get("password") or "")
+        set_smtp_password(password)
+        if not password.strip():
+            return jsonify({"ok": True, "message": "Đã xóa mật khẩu SMTP.", "configured": False})
+        return jsonify(
+            {
+                "ok": True,
+                "message": "Đã lưu mật khẩu SMTP (máy này).",
+                "configured": True,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@flask_app.post("/api/smtp/test")
+def api_smtp_test():
+    try:
+        from .send.smtp_cid import test_smtp_login
+
+        label = test_smtp_login(STATE.config)
+        return jsonify({"ok": True, "message": f"SMTP OK · {label}"})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @flask_app.get("/api/accessibility/status")
@@ -804,8 +859,10 @@ def api_send_start():
                 {
                     "ok": False,
                     "error": (
-                        "Chưa có chữ ký Mac. "
-                        "Bấm «Chữ ký» → dán chữ ký Outlook → Lưu, rồi Semi-Auto."
+                        "Mac chưa sẵn sàng gửi (Hướng 2).\n"
+                        "1) Legacy Outlook = ON\n"
+                        "2) New Mail tay phải thấy chữ ký AMBER + logo\n"
+                        "3) System Settings → Accessibility → bật «VT Rate Mail Sender»"
                     ),
                 }
             ), 400

@@ -56,18 +56,29 @@ function normalizeHtmlForOutlook(html) {
   box.querySelectorAll("table").forEach((t) => {
     t.style.borderCollapse = t.style.borderCollapse || "collapse";
     t.style.borderSpacing = t.style.borderSpacing || "0";
+    // Bỏ width/max-width % — Word + DPI laptop hay render lệch so với desktop
+    if (/width\s*:\s*100%/i.test(t.style.cssText || "")) t.style.width = "";
+    if (/max-width\s*:\s*100%/i.test(t.style.cssText || "")) t.style.maxWidth = "";
     if (!t.getAttribute("border")) t.setAttribute("border", "1");
     if (!t.getAttribute("cellspacing")) t.setAttribute("cellspacing", "0");
     if (!t.getAttribute("cellpadding")) t.setAttribute("cellpadding", "4");
   });
 
-  // px → pt trên style inline (giữ nguyên font-family user chọn)
+  // px → pt (96dpi cố định) — đồng bộ desktop 100% vs laptop 125%/150%
   box.querySelectorAll("[style]").forEach((el) => {
     const s = el.getAttribute("style") || "";
-    const next = s.replace(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi, (_, px) => {
-      const pt = Math.round((Number(px) * 72) / 96 * 10) / 10;
-      return `font-size:${pt}pt`;
-    });
+    const next = s
+      .replace(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi, (_, px) => {
+        const pt = Math.round((Number(px) * 72) / 96 * 10) / 10;
+        return `font-size:${pt}pt`;
+      })
+      .replace(
+        /(^|;)\s*(width|height|min-width|max-width|min-height|max-height)\s*:\s*(\d+(?:\.\d+)?)px/gi,
+        (_, sep, prop, px) => {
+          const pt = Math.round((Number(px) * 72) / 96 * 10) / 10;
+          return `${sep}${prop}:${pt}pt`;
+        }
+      );
     if (next !== s) el.setAttribute("style", next);
   });
 
@@ -117,12 +128,13 @@ function scheduleSaveCompose() {
 }
 
 function frameDoc(html) {
+  // Preview gần Word/Outlook: không max-width:100% (làm bảng/ảnh «nhảy» trên laptop)
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
     <style>
-      html,body{margin:0;padding:12px;background:#fff;color:#222}
+      html,body{margin:0;padding:12px;background:#fff;color:#222;overflow:auto}
       body{font-family:Aptos,Calibri,"Segoe UI",Arial,sans-serif;font-size:12pt;line-height:1.35}
-      table{border-collapse:collapse}
-      img{max-width:100%;height:auto}
+      table{border-collapse:collapse;max-width:none}
+      img{height:auto}
       p{margin:0 0 0.6em}
     </style></head><body>${html || ""}</body></html>`;
 }
@@ -694,15 +706,30 @@ function updateAxBanner(s) {
   if (text && need) {
     text.textContent =
       s.accessibility_message ||
-      "Cần bật Accessibility cho «VT Rate Mail Sender» để gửi mail mượt (paste body).";
+      "Cần Accessibility cho «VT Rate Mail Sender» (Hướng 2: chèn body trên chữ ký AMBER).";
   }
 }
 
 async function ensureMacAccessibilityOnce(s) {
-  // Chữ ký do user dán — không bắt Accessibility
+  // Hướng 2: cần Accessibility (paste fallback / ổn định compose)
   if (!s || s.platform !== "Darwin") return;
-  updateAxBanner({ ...s, accessibility_needed: false });
+  updateAxBanner(s);
+  if (s.accessibility_trusted) {
+    axPromptedThisSession = true;
+    return;
+  }
+  if (axPromptedThisSession) return;
   axPromptedThisSession = true;
+  try {
+    const st = await api("/api/accessibility/ensure", { method: "POST" });
+    if (state) {
+      state.accessibility_trusted = !!st.trusted;
+      state.accessibility_message = st.message || "";
+      updateAxBanner(state);
+    }
+  } catch (_) {
+    /* banner vẫn hiện nếu chưa trusted */
+  }
 }
 
 function applyState(s, forceHtml = false) {
@@ -714,23 +741,31 @@ function applyState(s, forceHtml = false) {
   document.getElementById("stats").textContent =
     `${s.stats.total} agency · ready ${s.stats.ready} · sent ${s.stats.sent} · fail ${s.stats.failed}`;
   updateAxBanner(s);
+  const btnOutlook = document.getElementById("btnOutlook");
+  if (btnOutlook && s.platform === "Darwin") {
+    btnOutlook.textContent = "Mở Outlook";
+  }
   if (s.outlook_ready) {
-    setOutlookStatus(`Outlook sẵn sàng · ${s.outlook_account || ""}`);
+    setOutlookStatus(
+      s.platform === "Darwin"
+        ? `Legacy sẵn sàng · ${s.outlook_account || ""}`
+        : `Outlook sẵn sàng · ${s.outlook_account || ""}`
+    );
   } else {
-    setOutlookStatus("Outlook: chưa kết nối");
+    setOutlookStatus(
+      s.platform === "Darwin" ? "Outlook Legacy: chưa kết nối" : "Outlook: chưa kết nối"
+    );
   }
   const btnSig = document.getElementById("btnCaptureSig");
   if (btnSig) {
-    // Mac: nút dự phòng (tuỳ chọn). Windows: ẩn — chữ ký New Mail tự gắn.
     const isMac = s.platform === "Darwin";
     btnSig.hidden = !isMac;
     if (isMac) {
-      const cached = !!(s.mac_signature_cached || s.mac_signature_has_file);
       const ready = !!s.mac_signature_ready;
-      btnSig.textContent = ready ? "Chữ ký ✓" : "Chữ ký";
+      btnSig.textContent = ready ? "Mac ✓" : "Mac setup";
       btnSig.title =
         s.mac_signature_message ||
-        "Dán chữ ký Outlook vào app (1 lần) rồi Semi-Auto";
+        "Legacy + AMBER sống + Accessibility → Semi-Auto";
       btnSig.classList.toggle("ok-sig", ready);
     }
   }
@@ -897,6 +932,8 @@ async function openSigDialog() {
   if (!dlg || !box) return;
   pendingSigHtml = "";
   box.innerHTML = "";
+  const pw = document.getElementById("smtpPassword");
+  if (pw) pw.value = "";
   try {
     const prev = await api("/api/outlook/signature-preview");
     if (prev.preview_html) {
@@ -926,7 +963,6 @@ document.getElementById("btnSigClear")?.addEventListener("click", () => {
 
 document.getElementById("btnSigFromClip")?.addEventListener("click", async () => {
   try {
-    // Preview đã nhúng data URI — không dùng Cmd+V vào khung (mất ảnh)
     const res = await api("/api/outlook/preview-signature-clipboard", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -948,7 +984,6 @@ document.getElementById("btnSigFromClip")?.addEventListener("click", async () =>
 
 document.getElementById("btnSigSave")?.addEventListener("click", async () => {
   try {
-    // Luôn gửi HTML đã chuẩn bị (pending) hoặc đọc lại clipboard — không tin contenteditable
     const html = pendingSigHtml || "";
     const res = await api("/api/outlook/save-signature", {
       method: "POST",
