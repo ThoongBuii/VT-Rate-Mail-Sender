@@ -178,6 +178,34 @@ end tell
         return False
 
 
+def close_compose_by_id(msg_id: str) -> bool:
+    """Đóng đúng New Mail theo id (không Cmd+W đụng cửa sổ compose khác)."""
+    mid = (msg_id or "").strip()
+    if not mid or not mid.isdigit():
+        return False
+    script = f'''
+tell application "Microsoft Outlook"
+  try
+    set msg to outgoing message id {mid}
+    close msg saving no
+    return "yes"
+  on error
+    try
+      set msg to message id {mid}
+      close msg saving no
+      return "yes"
+    on error
+      return "no"
+    end try
+  end try
+end tell
+'''
+    try:
+        return _run_nsapplescript(script).strip().lower().startswith("yes")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def claim_outlook_compose(*, subject_hint: str = "", msg_id: str = "") -> bool:
     """Một vòng nhanh: open(id) + raise compose (không lặp activate thừa)."""
     if msg_id:
@@ -224,10 +252,6 @@ def wait_compose_window(
     return False
 
 
-def has_compose_window(*, subject_hint: str = "", msg_id: str = "") -> bool:
-    return claim_outlook_compose(subject_hint=subject_hint, msg_id=msg_id)
-
-
 def _cg_key(keycode: int, *, flags: int = 0) -> None:
     from Quartz import (  # type: ignore
         CGEventCreateKeyboardEvent,
@@ -255,10 +279,6 @@ def _cg_tab() -> None:
     _cg_key(48)
 
 
-def _cg_escape() -> None:
-    _cg_key(53)
-
-
 def _cg_cmd_v() -> None:
     from Quartz import kCGEventFlagMaskCommand  # type: ignore
 
@@ -269,12 +289,6 @@ def _cg_cmd_return() -> None:
     from Quartz import kCGEventFlagMaskCommand  # type: ignore
 
     _cg_key(36, flags=kCGEventFlagMaskCommand)
-
-
-def _cg_cmd_w() -> None:
-    from Quartz import kCGEventFlagMaskCommand  # type: ignore
-
-    _cg_key(13, flags=kCGEventFlagMaskCommand)
 
 
 def _focus_subject_via_ax(*, subject_hint: str = "") -> str:
@@ -376,12 +390,6 @@ end tell
         return f"err:{exc}"
 
 
-def probe_subject_ax(*, subject_hint: str = "", msg_id: str = "") -> str:
-    if msg_id:
-        claim_outlook_compose(subject_hint=subject_hint, msg_id=msg_id)
-    return _focus_subject_via_ax(subject_hint=subject_hint)
-
-
 def focus_subject_carefully(
     *, subject_hint: str = "", msg_id: str = "", already_raised: bool = False
 ) -> str:
@@ -419,84 +427,15 @@ def _subject_tab_paste(
     time.sleep(0.22)
 
 
-def paste_body_keyboard(
-    *,
-    has_cc: bool = True,
-    subject_hint: str = "",
-    msg_id: str = "",
-    already_raised: bool = False,
-) -> None:
-    _ = has_cc
-    _subject_tab_paste(
-        subject_hint=subject_hint, msg_id=msg_id, already_raised=already_raised
-    )
-
-
 def paste_and_send_keyboard(
     *,
-    has_cc: bool = True,
     subject_hint: str = "",
     msg_id: str = "",
     already_raised: bool = False,
 ) -> None:
     """AX Subject → Tab 1 → paste → Cmd+Return."""
-    _ = has_cc
     _subject_tab_paste(
         subject_hint=subject_hint, msg_id=msg_id, already_raised=already_raised
     )
     _cg_cmd_return()
     time.sleep(0.05)
-
-
-def send_compose_cmd_return(
-    *, already_in_body: bool = True, subject_hint: str = "", msg_id: str = ""
-) -> None:
-    if not already_in_body:
-        focus_subject_carefully(subject_hint=subject_hint, msg_id=msg_id)
-        _cg_tab()
-        time.sleep(0.04)
-    else:
-        activate_outlook(settle=0.02)
-    _cg_cmd_return()
-    time.sleep(0.05)
-
-
-def close_front_compose_keyboard() -> None:
-    if not raise_compose_window():
-        activate_outlook(settle=0.03)
-        if not raise_compose_window():
-            return
-    _cg_cmd_w()
-    time.sleep(0.06)
-    _cg_escape()
-    time.sleep(0.02)
-
-
-# --- API tương thích ---
-
-def paste_body_via_subject_tab(*, has_cc: bool = True) -> None:
-    paste_body_keyboard(has_cc=has_cc)
-
-
-def paste_and_send_via_tabs(*, has_cc: bool) -> None:
-    paste_and_send_keyboard(has_cc=has_cc)
-
-
-def paste_html_into_compose_body(*, y_ratio: float = 0.36) -> None:
-    _ = y_ratio
-    paste_body_keyboard(has_cc=True)
-
-
-def focus_compose_body(*, y_ratio: float = 0.38) -> None:
-    _ = y_ratio
-    focus_subject_carefully()
-    _cg_tab()
-    time.sleep(0.1)
-
-
-def focus_subject_field() -> None:
-    focus_subject_carefully()
-
-
-def click_send_button() -> None:
-    send_compose_cmd_return(already_in_body=True)

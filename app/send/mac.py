@@ -1,10 +1,10 @@
 """macOS Outlook Legacy — quy trình chuẩn.
 
-1) Khoá phím 0.5s → AS New Mail + To/Cc/Subject
-2) Claim compose 1 lần (open id) → AX Subject → Tab → paste → Send (burst nhanh)
-3) Verify Sent
+1) Khoá phím 0.5s → AS New Mail + To/Cc/Subject → msg_id
+2) Claim đúng cửa sổ theo msg_id → AX Subject → Tab → paste → Send
+3) Đóng đúng msg_id nếu còn mở (không Cmd+W đụng compose khác; không quét Sent)
 
-Không trả Zalo. Không claim/wait chồng nhiều vòng.
+Không trả Zalo. Không đóng/verify lan sang cửa sổ New Mail của user.
 """
 
 from __future__ import annotations
@@ -338,60 +338,6 @@ end tell
             emails.append(em)
         return emails
 
-    def _any_compose_window_open(self) -> bool:
-        script = '''
-tell application "System Events"
-  tell process "Microsoft Outlook"
-    try
-      repeat with w in windows
-        try
-          set n to name of w as text
-          if (n contains "@") or (n contains "Untitled") then return "yes"
-        end try
-      end repeat
-    end try
-  end tell
-end tell
-return "no"
-'''
-        try:
-            return _run_osascript_file(script, timeout=12).strip().lower().startswith(
-                "yes"
-            )
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _close_compose_ui_windows(self) -> None:
-        """
-        Đóng New Mail bằng Cmd+W (không click chuột / không delete outgoing).
-
-        CẤM `delete` outgoing: Outlook Mac `outgoing messages` còn gồm mail
-        đã nằm Sent (cùng id) → delete = xóa Sent Items.
-        """
-        try:
-            from .mac_hid import close_front_compose_keyboard
-
-            for _ in range(3):
-                if not self._any_compose_window_open():
-                    break
-                close_front_compose_keyboard()
-                time.sleep(0.2)
-        except Exception:  # noqa: BLE001
-            pass
-        time.sleep(0.15)
-
-    def _discard_all_outgoing(self) -> None:
-        """Không xóa mail — chỉ đóng UI compose."""
-        self._close_compose_ui_windows()
-
-    def _discard_outgoing_subject(self, subject: str) -> None:
-        """Không xóa mail — chỉ đóng UI compose."""
-        _ = subject
-        self._close_compose_ui_windows()
-
-    def _close_stuck_vt_drafts(self) -> None:
-        self._close_compose_ui_windows()
-
     def open_outlook(self) -> str:
         """Legacy ON · Accessibility · AppleScript chạy được."""
         ensure_assistive_access(prompt=True)
@@ -555,307 +501,6 @@ return "no"
             return [p for p in attachment if p is not None]
         return []
 
-    def _outgoing_ids(self) -> list[str]:
-        """Danh sách id outgoing hiện có (tránh gắn field vào draft cũ)."""
-        script = '''
-tell application "Microsoft Outlook"
-  set outIds to {}
-  try
-    repeat with m in (get outgoing messages)
-      try
-        set end of outIds to (id of m as string)
-      end try
-    end repeat
-  end try
-  set AppleScript's text item delimiters to "|"
-  set joined to outIds as string
-  set AppleScript's text item delimiters to ""
-  return joined
-end tell
-'''
-        try:
-            raw = _run_osascript_file(script, timeout=20)
-        except Exception:  # noqa: BLE001
-            return []
-        return [p.strip() for p in (raw or "").split("|") if p.strip()]
-
-    def _newest_outgoing_id(self, *, exclude_ids: list[str]) -> str:
-        """Id outgoing mới sau Cmd+N (không trùng draft cũ)."""
-        exclude = {i for i in exclude_ids}
-        for _ in range(12):
-            for oid in self._outgoing_ids():
-                if oid not in exclude:
-                    return oid
-            time.sleep(0.12)
-        return ""
-
-    def _paste_and_send_burst(
-        self,
-        *,
-        has_cc: bool,
-        subject: str = "",
-        msg_id: str = "",
-        already_raised: bool = False,
-    ) -> None:
-        """AX Subject → Tab 1 → paste → Cmd+Return."""
-        from .mac_hid import paste_and_send_keyboard
-
-        paste_and_send_keyboard(
-            has_cc=has_cc,
-            subject_hint=subject,
-            msg_id=msg_id,
-            already_raised=already_raised,
-        )
-
-    def _ui_send(self, *, subject: str = "", msg_id: str = "") -> None:
-        from .mac_hid import send_compose_cmd_return
-
-        send_compose_cmd_return(
-            already_in_body=True, subject_hint=subject, msg_id=msg_id
-        )
-
-    def _message_in_sent(self, subject: str, *, within_minutes: int = 5) -> bool:
-        """
-        True nếu subject vừa gửi — quét Sent Exchange/IMAP/POP + folder tên Sent*
-        (POP «On My Computer» thường không nằm trong sent items mặc định).
-        """
-        want = _esc(subject)
-        mins = max(1, int(within_minutes))
-        # Một script phẳng: khớp subject; time sent optional (POP đôi khi thiếu).
-        script = f'''
-tell application "Microsoft Outlook"
-  set wantSubj to "{want}"
-  set cutoff to (current date) - ({mins} * minutes)
-
-  -- 1) sent items mặc định
-  try
-    repeat with m in (get messages of sent items)
-      try
-        if (subject of m as string) is wantSubj then
-          try
-            if (time sent of m) ≥ cutoff then return "yes"
-          on error
-            return "yes"
-          end try
-        end if
-      end try
-    end repeat
-  end try
-
-  -- 2) Exchange
-  try
-    repeat with acc in (get exchange accounts)
-      try
-        repeat with m in (get messages of sent items of acc)
-          try
-            if (subject of m as string) is wantSubj then
-              try
-                if (time sent of m) ≥ cutoff then return "yes"
-              on error
-                return "yes"
-              end try
-            end if
-          end try
-        end repeat
-      end try
-    end repeat
-  end try
-
-  -- 3) IMAP
-  try
-    repeat with acc in (get imap accounts)
-      try
-        repeat with m in (get messages of sent items of acc)
-          try
-            if (subject of m as string) is wantSubj then
-              try
-                if (time sent of m) ≥ cutoff then return "yes"
-              on error
-                return "yes"
-              end try
-            end if
-          end try
-        end repeat
-      end try
-    end repeat
-  end try
-
-  -- 4) POP (On My Computer / local)
-  try
-    repeat with acc in (get pop accounts)
-      try
-        repeat with m in (get messages of sent items of acc)
-          try
-            if (subject of m as string) is wantSubj then
-              try
-                if (time sent of m) ≥ cutoff then return "yes"
-              on error
-                return "yes"
-              end try
-            end if
-          end try
-        end repeat
-      end try
-      try
-        repeat with fld in (get mail folders of acc)
-          try
-            set nm to name of fld as string
-            if nm is "Sent" or nm is "Sent Items" or nm is "Sent Messages" then
-              repeat with m in (get messages of fld)
-                try
-                  if (subject of m as string) is wantSubj then
-                    try
-                      if (time sent of m) ≥ cutoff then return "yes"
-                    on error
-                      return "yes"
-                    end try
-                  end if
-                end try
-              end repeat
-            end if
-          end try
-        end repeat
-      end try
-    end repeat
-  end try
-
-  -- 5) Mọi mail folder tên Sent* (fallback On My Computer)
-  try
-    repeat with fld in (get mail folders)
-      try
-        set nm to name of fld as string
-        if nm is "Sent" or nm is "Sent Items" or nm is "Sent Messages" then
-          repeat with m in (get messages of fld)
-            try
-              if (subject of m as string) is wantSubj then
-                try
-                  if (time sent of m) ≥ cutoff then return "yes"
-                on error
-                  return "yes"
-                end try
-              end if
-            end try
-          end repeat
-        end if
-      end try
-    end repeat
-  end try
-
-  return "no"
-end tell
-'''
-        try:
-            return _run_osascript_file(script, timeout=40).strip().lower().startswith(
-                "yes"
-            )
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _compose_window_still_open(self, subject: str) -> bool:
-        """
-        True nếu còn cửa sổ *compose* (title có subject + @ / Untitled).
-        Tránh khớp nhầm cửa sổ chính khi đang xem Sent.
-        """
-        needle = _esc((subject or "").strip()[:48])
-        if not needle:
-            return False
-        script = f'''
-tell application "System Events"
-  tell process "Microsoft Outlook"
-    try
-      repeat with w in windows
-        try
-          set n to name of w as text
-          if n contains "{needle}" then
-            if n contains "@" or n contains "Untitled" then return "yes"
-          end if
-        end try
-      end repeat
-    end try
-  end tell
-end tell
-return "no"
-'''
-        try:
-            return _run_osascript_file(script, timeout=15).strip().lower().startswith(
-                "yes"
-            )
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _outgoing_with_subject(self, subject: str) -> bool:
-        """
-        True nếu còn draft/outgoing chưa gửi (cùng subject) và CHƯA nằm trong Sent.
-        Quét outgoing + folder Drafts (POP On My Computer).
-        """
-        want = _esc(subject)
-        script = f'''
-tell application "Microsoft Outlook"
-  set wantSubj to "{want}"
-  try
-    repeat with m in (get outgoing messages)
-      try
-        if (subject of m as string) is wantSubj then
-          set mid to (id of m as string)
-          set alreadySent to false
-          try
-            repeat with s in (get messages of sent items)
-              try
-                if ((id of s) as string) is mid then
-                  set alreadySent to true
-                  exit repeat
-                end if
-              end try
-            end repeat
-          end try
-          if alreadySent is false then return "yes"
-        end if
-      end try
-    end repeat
-  end try
-  -- Drafts folder (POP / On My Computer)
-  try
-    repeat with fld in (get mail folders)
-      try
-        set nm to name of fld as string
-        if nm is "Drafts" or nm is "Draft" then
-          repeat with m in (get messages of fld)
-            try
-              if (subject of m as string) is wantSubj then return "yes"
-            end try
-          end repeat
-        end if
-      end try
-    end repeat
-  end try
-  try
-    repeat with acc in (get pop accounts)
-      try
-        repeat with fld in (get mail folders of acc)
-          try
-            set nm to name of fld as string
-            if nm is "Drafts" or nm is "Draft" then
-              repeat with m in (get messages of fld)
-                try
-                  if (subject of m as string) is wantSubj then return "yes"
-                end try
-              end repeat
-            end if
-          end try
-        end repeat
-      end try
-    end repeat
-  end try
-  return "no"
-end tell
-'''
-        try:
-            return _run_osascript_file(script, timeout=30).strip().lower().startswith(
-                "yes"
-            )
-        except Exception:  # noqa: BLE001
-            return False
-
     def send(
         self,
         to_list: list[str],
@@ -865,11 +510,16 @@ end tell
         attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
-        Khoá phím → New Mail → claim Outlook front (open id) → paste → Send.
-        Không trả Zalo. Zalo đang type vẫn có thể giữ front — phải claim lại theo msg id.
+        Theo đúng msg_id: tạo → claim → paste/Send → đóng id đó.
+        Không Cmd+W lan sang New Mail khác; không verify Sent.
         """
         from ..clipboard_html import set_mac_clipboard_html
-        from .mac_hid import claim_outlook_compose, wait_compose_window
+        from .mac_hid import (
+            claim_outlook_compose,
+            close_compose_by_id,
+            paste_and_send_keyboard,
+            wait_compose_window,
+        )
         from .mac_keylock import keyboard_guard
 
         if not ensure_assistive_access(prompt=True):
@@ -896,9 +546,6 @@ end tell
             for p in files
         )
         recip_block = _applescript_set_recipients(to_list, cc_list)
-        has_cc = bool(cc_list)
-
-        set_mac_clipboard_html(prepared)
 
         create_script = f'''
 tell application "Microsoft Outlook"
@@ -913,10 +560,8 @@ tell application "Microsoft Outlook"
 end tell
 '''
 
-        # Khoá phím (chặn gõ Zalo) → New Mail → claim Outlook → paste (không trả Zalo)
+        msg_id = ""
         with keyboard_guard(pre_focus_s=0.5):
-            self._close_compose_ui_windows()
-
             try:
                 try:
                     msg_id = _run_nsapplescript(create_script).strip()
@@ -932,88 +577,35 @@ end tell
             if not msg_id:
                 raise RuntimeError("Không lấy được id New Mail.")
 
-            # Claim compose 1 lần (timeout ngắn) — không claim chồng trước paste.
             if not wait_compose_window(
                 timeout=1.4, subject_hint=subject, msg_id=msg_id
+            ) and not claim_outlook_compose(
+                subject_hint=subject, msg_id=msg_id
             ):
-                if not claim_outlook_compose(
-                    subject_hint=subject, msg_id=msg_id
-                ):
-                    self._close_compose_ui_windows()
-                    raise RuntimeError(
-                        "New Mail đã tạo nhưng chưa thấy cửa sổ compose.\n"
-                        "Zalo đang giữ focus? Legacy ON · thử lại."
-                    )
+                close_compose_by_id(msg_id)
+                raise RuntimeError(
+                    "New Mail đã tạo nhưng chưa thấy cửa sổ compose.\n"
+                    "Zalo đang giữ focus? Legacy ON · thử lại."
+                )
 
             try:
                 set_mac_clipboard_html(prepared)
-                self._paste_and_send_burst(
-                    has_cc=has_cc,
-                    subject=subject,
+                paste_and_send_keyboard(
+                    subject_hint=subject,
                     msg_id=msg_id,
                     already_raised=True,
                 )
             except Exception as exc:  # noqa: BLE001
-                self._close_compose_ui_windows()
+                # Chỉ đóng đúng msg_id của autosend — không Cmd+W cửa sổ khác
+                close_compose_by_id(msg_id)
                 raise RuntimeError(
                     "Paste/gửi lỗi trên New Mail.\n"
                     "AX Subject → Tab → paste → Send (phím đã khoá trong burst).\n"
                     f"{exc}"
                 ) from exc
 
-            try:
-                set_mac_clipboard_html("<div></div>")
-            except Exception:  # noqa: BLE001
-                pass
-
-            time.sleep(0.12)
-            if self._compose_window_still_open(subject):
-                try:
-                    self._ui_send(subject=subject, msg_id=msg_id)
-                    time.sleep(0.15)
-                except Exception:  # noqa: BLE001
-                    pass
-
-        compose_closed = False
-        for _ in range(6):
-            if not self._compose_window_still_open(subject):
-                compose_closed = True
-                break
-            time.sleep(0.2)
-
-        sent_ok = False
-        for _ in range(8):
-            if self._message_in_sent(subject, within_minutes=5):
-                sent_ok = True
-                break
-            if compose_closed and not self._outgoing_with_subject(subject):
-                sent_ok = True
-                break
-            time.sleep(0.35)
-
-        if sent_ok:
-            return
-
-        if self._compose_window_still_open(subject):
-            self._close_compose_ui_windows()
-            raise RuntimeError(
-                "New Mail vẫn mở — gửi/paste có thể hụt.\n"
-                "Legacy ON · thử lại agency này.\n"
-                f"To: {', '.join(to_list)} · Subject: {subject}"
-            )
-
-        if self._outgoing_with_subject(subject):
-            raise RuntimeError(
-                "Mail nằm Drafts (chưa vào Sent) — paste/send hụt.\n"
-                "Xóa draft trong Outlook · thử lại.\n"
-                f"To: {', '.join(to_list)} · Subject: {subject}"
-            )
-
-        raise RuntimeError(
-            "Không thấy mail trong Sent (đã quét POP/IMAP/Exchange).\n"
-            "Kiểm tra Drafts · Legacy Outlook = ON · thử lại agency này.\n"
-            f"To: {', '.join(to_list)} · Subject: {subject}"
-        )
+            # Cmd+Return thành công → Outlook tự đóng compose. Không verify / không close thêm
+            # (close saving no ngay sau Send có thể huỷ mail đang gửi).
 
 
 
