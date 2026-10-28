@@ -1,7 +1,7 @@
 """Mac HID tối thiểu — quy trình chuẩn (đã probe Legacy):
 
 AS (mac.py): New Mail + To/Cc/Subject  →  caret mặc định ở To
-HID:
+HID (trong KeyboardLock — chặn gõ user):
   1) Kéo focus Outlook + raise New Mail
   2) AX set focused ô Subject (AXSplitGroup / description «Subject:»)
   3) Tab đúng 1 lần → body
@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import subprocess
 import time
+
+from .mac_keylock import get_keyboard_lock
 
 
 def _run_nsapplescript(source: str) -> str:
@@ -115,7 +117,7 @@ def _compose_picker_as(subject_hint: str) -> str:
 '''
 
 
-def activate_outlook(*, settle: float = 0.05) -> None:
+def activate_outlook(*, settle: float = 0.03) -> None:
     try:
         _run_nsapplescript(
             '''
@@ -161,13 +163,13 @@ end tell
         return False
 
 
-def wait_compose_window(*, timeout: float = 2.5, subject_hint: str = "") -> bool:
-    deadline = time.time() + max(0.3, timeout)
+def wait_compose_window(*, timeout: float = 1.8, subject_hint: str = "") -> bool:
+    deadline = time.time() + max(0.2, timeout)
     while time.time() < deadline:
-        activate_outlook(settle=0.03)
+        activate_outlook(settle=0.02)
         if raise_compose_window(subject_hint=subject_hint):
             return True
-        time.sleep(0.07)
+        time.sleep(0.05)
     return False
 
 
@@ -183,14 +185,19 @@ def _cg_key(keycode: int, *, flags: int = 0) -> None:
         kCGHIDEventTap,
     )
 
-    down = CGEventCreateKeyboardEvent(None, keycode, True)
-    up = CGEventCreateKeyboardEvent(None, keycode, False)
-    if flags:
-        CGEventSetFlags(down, flags)
-        CGEventSetFlags(up, flags)
-    CGEventPost(kCGHIDEventTap, down)
-    time.sleep(0.016)
-    CGEventPost(kCGHIDEventTap, up)
+    lock = get_keyboard_lock()
+    lock.allow_synth(True)
+    try:
+        down = CGEventCreateKeyboardEvent(None, keycode, True)
+        up = CGEventCreateKeyboardEvent(None, keycode, False)
+        if flags:
+            CGEventSetFlags(down, flags)
+            CGEventSetFlags(up, flags)
+        CGEventPost(kCGHIDEventTap, down)
+        time.sleep(0.012)
+        CGEventPost(kCGHIDEventTap, up)
+    finally:
+        lock.allow_synth(False)
 
 
 def _cg_tab() -> None:
@@ -302,12 +309,12 @@ tell application "System Events"
     if found is missing value then return "no-field"
 
     set focused of found to true
-    delay 0.05
+    delay 0.03
     try
       if (focused of found) is true then return "ok"
     end try
     set focused of found to true
-    delay 0.05
+    delay 0.03
     return "ok"
   end tell
 end tell
@@ -324,14 +331,14 @@ def probe_subject_ax(*, subject_hint: str = "") -> str:
 
 def focus_subject_carefully(*, subject_hint: str = "") -> str:
     """Raise New Mail + AX focused Subject (retry 1 lần)."""
-    if not wait_compose_window(timeout=2.2, subject_hint=subject_hint):
+    if not wait_compose_window(timeout=1.6, subject_hint=subject_hint):
         raise RuntimeError(
             "Không focus được cửa sổ New Mail (Outlook bị app khác che?).\n"
             "Giữ Space lúc gửi."
         )
     ax = _focus_subject_via_ax(subject_hint=subject_hint)
     if ax != "ok":
-        activate_outlook(settle=0.05)
+        activate_outlook(settle=0.03)
         raise_compose_window(subject_hint=subject_hint)
         ax = _focus_subject_via_ax(subject_hint=subject_hint)
     if ax != "ok":
@@ -339,17 +346,17 @@ def focus_subject_carefully(*, subject_hint: str = "") -> str:
             f"AX không focus được ô Subject ({ax}).\n"
             "Legacy ON · Accessibility cho VT Rate Mail Sender."
         )
-    time.sleep(0.06)
+    time.sleep(0.04)
     return "ax"
 
 
 def _subject_tab_paste(*, subject_hint: str = "") -> None:
-    """Chuẩn: AX Subject → Tab 1 → Cmd+V → chờ."""
+    """Chuẩn: AX Subject → Tab 1 → Cmd+V → chờ ngắn."""
     focus_subject_carefully(subject_hint=subject_hint)
     _cg_tab()
-    time.sleep(0.12)
+    time.sleep(0.08)
     _cg_cmd_v()
-    time.sleep(0.48)
+    time.sleep(0.36)
 
 
 def paste_body_keyboard(*, has_cc: bool = True, subject_hint: str = "") -> None:
@@ -362,29 +369,29 @@ def paste_and_send_keyboard(*, has_cc: bool = True, subject_hint: str = "") -> N
     _ = has_cc
     _subject_tab_paste(subject_hint=subject_hint)
     _cg_cmd_return()
-    time.sleep(0.1)
+    time.sleep(0.08)
 
 
 def send_compose_cmd_return(*, already_in_body: bool = True, subject_hint: str = "") -> None:
-    activate_outlook(settle=0.04)
+    activate_outlook(settle=0.03)
     raise_compose_window(subject_hint=subject_hint)
     if not already_in_body:
         focus_subject_carefully(subject_hint=subject_hint)
         _cg_tab()
-        time.sleep(0.1)
+        time.sleep(0.08)
     _cg_cmd_return()
-    time.sleep(0.1)
+    time.sleep(0.08)
 
 
 def close_front_compose_keyboard() -> None:
     if not raise_compose_window():
-        activate_outlook(settle=0.04)
+        activate_outlook(settle=0.03)
         if not raise_compose_window():
             return
     _cg_cmd_w()
-    time.sleep(0.08)
+    time.sleep(0.06)
     _cg_escape()
-    time.sleep(0.03)
+    time.sleep(0.02)
 
 
 # --- API tương thích ---
