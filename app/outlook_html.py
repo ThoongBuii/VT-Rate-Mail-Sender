@@ -28,6 +28,67 @@ def _merge_style(existing: str, additions: str) -> str:
     return ";".join(parts)
 
 
+_MARGIN_KEYS = {
+    "margin",
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left",
+    "mso-margin-top-alt",
+    "mso-margin-bottom-alt",
+    "mso-para-margin",
+    "mso-para-margin-top",
+    "mso-para-margin-bottom",
+}
+_PADDING_KEYS = {
+    "padding",
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+}
+
+
+def _override_style(existing: str, overrides: str) -> str:
+    """Ghi đè prop trong overrides — xoá longhand margin/padding cũ của Outlook/Word."""
+    base: dict[str, str] = {}
+    order: list[str] = []
+    for chunk in (existing or "").split(";"):
+        chunk = chunk.strip()
+        if not chunk or ":" not in chunk:
+            continue
+        key, val = chunk.split(":", 1)
+        k = key.strip().lower()
+        if k not in base:
+            order.append(k)
+        base[k] = val.strip()
+
+    ov: dict[str, str] = {}
+    for chunk in (overrides or "").split(";"):
+        chunk = chunk.strip()
+        if not chunk or ":" not in chunk:
+            continue
+        key, val = chunk.split(":", 1)
+        ov[key.strip().lower()] = val.strip()
+
+    # margin:0 phải đè hết margin-bottom:12pt / 0cm từ MsoNormal
+    if "margin" in ov:
+        for k in list(base):
+            if k in _MARGIN_KEYS:
+                base.pop(k, None)
+    if "padding" in ov:
+        for k in list(base):
+            if k in _PADDING_KEYS:
+                base.pop(k, None)
+
+    for k, val in ov.items():
+        if k not in base and k not in order:
+            order.append(k)
+        base[k] = val
+
+    return ";".join(f"{k}:{base[k]}" for k in order if k in base)
+
+
 def convert_px_font_sizes_to_pt(html: str) -> str:
     def _repl(m: re.Match[str]) -> str:
         px = float(m.group(1))
@@ -127,6 +188,94 @@ def ensure_inline_fonts(html: str, *, in_table: bool = False) -> str:
     return html or ""
 
 
+# Khoảng dòng đồng bộ Soạn ↔ Preview ↔ Outlook Mac (tránh 0.6em + Word spacing chồng)
+_P_SPACING = (
+    "margin:0;padding:0;line-height:1.35;"
+    "mso-line-height-rule:exactly;"
+    "mso-margin-top-alt:0;mso-margin-bottom-alt:0"
+)
+_TABLE_SPACING = "margin:6pt 0;border-collapse:collapse;border-spacing:0"
+_CELL_SPACING = "padding:3pt 4pt;line-height:1.25;vertical-align:middle"
+
+
+def collapse_empty_paragraphs(html: str) -> str:
+    """Gộp/xoá <p>/<div> trống (Enter thừa) — Outlook hay phóng khoảng trống này."""
+    s = html or ""
+    empty_block = re.compile(
+        r"<(?P<tag>p|div)(?P<attrs>[^>]*)>\s*"
+        r"(?:<br\s*/?>|&nbsp;|\xa0|&#160;|\s|"
+        r"<span[^>]*>\s*(?:&nbsp;|\xa0|&#160;|<br\s*/?>|\s)*</span>)*"
+        r"\s*</(?P=tag)>",
+        flags=re.I,
+    )
+    # Giữ tối đa 1 khối trống liên tiếp → một <br> (bỏ qua whitespace giữa các khối)
+    out: list[str] = []
+    i = 0
+    empty_run = 0
+    while i < len(s):
+        if s[i].isspace():
+            # Giữ whitespace nhưng không reset empty_run (tránh <br><br> vì \n)
+            j = i
+            while j < len(s) and s[j].isspace():
+                j += 1
+            if empty_block.match(s, j):
+                i = j
+                continue
+            out.append(s[i:j])
+            i = j
+            empty_run = 0
+            continue
+        m = empty_block.match(s, i)
+        if m:
+            empty_run += 1
+            if empty_run == 1:
+                out.append("<br>")
+            i = m.end()
+            continue
+        empty_run = 0
+        out.append(s[i])
+        i += 1
+    return "".join(out)
+
+
+def normalize_paragraph_spacing(html: str) -> str:
+    """
+    Ép khoảng dòng đều cho Outlook Mac/Word:
+    - p/div: margin 0 + line-height 1.35 (không 0.6em lệch)
+    - table: margin trên/dưới 6pt đều
+    - ô: padding cố định; p trong ô margin 0
+    """
+
+    def _open_repl(m: re.Match[str]) -> str:
+        tag = m.group(1)
+        full = m.group(0)
+        style = ""
+        sm = re.search(r"""\sstyle\s*=\s*["']([^"']*)["']""", full, flags=re.I)
+        if sm:
+            style = sm.group(1)
+        tl = tag.lower()
+        if tl == "table":
+            new_style = _override_style(style, _TABLE_SPACING)
+        elif tl in {"td", "th"}:
+            new_style = _override_style(style, _CELL_SPACING)
+        else:
+            new_style = _override_style(style, _P_SPACING)
+        if sm:
+            return full[: sm.start()] + f' style="{new_style}"' + full[sm.end() :]
+        return re.sub(
+            rf"^<{tag}\b",
+            f'<{tag} style="{new_style}"',
+            full,
+            count=1,
+            flags=re.I,
+        )
+
+    s = html or ""
+    s = collapse_empty_paragraphs(s)
+    s = re.sub(r"<(p|div|table|td|th)\b[^>]*>", _open_repl, s, flags=re.I)
+    return s
+
+
 def wrap_root_body(html: str) -> str:
     s = (html or "").strip()
     if not s:
@@ -135,9 +284,35 @@ def wrap_root_body(html: str) -> str:
         r"""(?is)^\s*<div\b[^>]*\bdata-vt-body\s*=\s*["']1["']""",
         s,
     ):
-        return s
+        # Đồng bộ style wrapper nếu đã có
+        def _wrap_fix(m: re.Match[str]) -> str:
+            tag = m.group(0)
+            sm = re.search(r"""\sstyle\s*=\s*["']([^"']*)["']""", tag, flags=re.I)
+            style = sm.group(1) if sm else ""
+            new_style = _override_style(
+                style,
+                "line-height:1.35;margin:0;padding:0;color:#222;"
+                "mso-line-height-rule:exactly",
+            )
+            if sm:
+                return tag[: sm.start()] + f' style="{new_style}"' + tag[sm.end() :]
+            return re.sub(
+                r"^<div\b",
+                f'<div style="{new_style}"',
+                tag,
+                count=1,
+                flags=re.I,
+            )
+
+        return re.sub(
+            r"""(?is)^\s*<div\b[^>]*\bdata-vt-body\s*=\s*["']1["'][^>]*>""",
+            _wrap_fix,
+            s,
+            count=1,
+        )
     return (
-        f'<div data-vt-body="1" style="line-height:1.35;margin:0;padding:0;color:#222;">'
+        f'<div data-vt-body="1" style="line-height:1.35;margin:0;padding:0;color:#222;'
+        f'mso-line-height-rule:exactly;">'
         f"{s}</div>"
     )
 
@@ -191,7 +366,7 @@ def harden_images_for_outlook(html: str) -> str:
 
 
 def prepare_body_html_for_outlook(html: str) -> str:
-    """Pipeline trước khi chèn vào New Mail Outlook (đồng bộ desktop/laptop DPI)."""
+    """Pipeline trước khi chèn vào New Mail Outlook (đồng bộ desktop/laptop DPI + khoảng dòng)."""
     s = (html or "").strip()
     if not s:
         return s
@@ -200,6 +375,7 @@ def prepare_body_html_for_outlook(html: str) -> str:
     s = harden_tables_for_outlook(s)
     s = harden_images_for_outlook(s)
     s = ensure_inline_fonts(s)
+    s = normalize_paragraph_spacing(s)
     s = strip_trailing_empty_blocks(s)
     s = wrap_root_body(s)
     return s

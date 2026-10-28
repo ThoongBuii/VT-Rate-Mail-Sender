@@ -469,9 +469,10 @@ def api_accessibility_ensure():
 @flask_app.post("/api/clipboard/paste")
 def api_clipboard_paste():
     """
-    Đọc clipboard (Windows CF_HTML / macOS WebArchive) + nhúng ảnh base64.
+    Đọc clipboard (Outlook New Mail copy → CF_HTML / WebArchive) + nhúng ảnh.
+    Chuẩn hóa khoảng dòng để Soạn ≈ paste lại New Mail.
     replace=true: ghi đè toàn bộ template.
-    replace=false (mặc định): chỉ trả HTML đã làm sạch để chèn tại con trỏ.
+    replace=false: chèn tại con trỏ.
     """
     try:
         from .clipboard_html import clipboard_html_for_compose

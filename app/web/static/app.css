@@ -528,11 +528,32 @@ body {
 }
 .compose-editor table {
   border-collapse: collapse;
+  border-spacing: 0;
   max-width: none;
+  margin: 6pt 0;
+}
+.compose-editor td,
+.compose-editor th {
+  padding: 3pt 4pt;
+  line-height: 1.25;
+  vertical-align: middle;
 }
 .compose-editor img { height: auto; }
-.compose-editor p { margin: 0 0 0.6em; }
-.compose-editor p:last-child { margin-bottom: 0; }
+/* Đồng bộ Outlook Mac: không 0.6em — margin 0, chỉ line-height */
+.compose-editor p,
+.compose-editor div {
+  margin: 0;
+  padding: 0;
+  line-height: 1.35;
+}
+.compose-editor td p,
+.compose-editor th p,
+.compose-editor td div,
+.compose-editor th div {
+  margin: 0;
+  padding: 0;
+  line-height: 1.25;
+}
 .drop-zone.drag-over {
   outline: 2px dashed var(--blue);
   outline-offset: -2px;

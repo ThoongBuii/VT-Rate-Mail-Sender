@@ -45,6 +45,14 @@ function getComposeHtml({ normalize = true } = {}) {
   return normalizeHtmlForOutlook(html);
 }
 
+function _isEmptyBlockEl(el) {
+  if (!el || !/^(P|DIV)$/i.test(el.tagName)) return false;
+  const t = (el.textContent || "").replace(/\u00a0/g, " ").trim();
+  if (t) return false;
+  // Chỉ br / khoảng trắng / span trống
+  return !el.querySelector("table,img,hr");
+}
+
 /** Chuẩn hóa nhẹ cho Outlook — KHÔNG ép đè font user đã chọn trên toolbar. */
 function normalizeHtmlForOutlook(html) {
   const trimmed = (html || "").trim();
@@ -53,15 +61,55 @@ function normalizeHtmlForOutlook(html) {
   const box = document.createElement("div");
   box.innerHTML = trimmed;
 
+  // Gộp p/div trống liên tiếp → 1 <br> (tránh Outlook phóng khoảng Enter thừa)
+  const blocks = Array.from(box.querySelectorAll("p, div"));
+  let emptyRun = [];
+  const flushEmpty = () => {
+    if (!emptyRun.length) return;
+    const first = emptyRun[0];
+    const br = document.createElement("br");
+    first.parentNode.insertBefore(br, first);
+    emptyRun.forEach((el) => el.remove());
+    emptyRun = [];
+  };
+  blocks.forEach((el) => {
+    // Bỏ qua wrapper ngoài cùng
+    if (el.getAttribute("data-vt-body") === "1") {
+      flushEmpty();
+      return;
+    }
+    if (_isEmptyBlockEl(el)) {
+      emptyRun.push(el);
+    } else {
+      flushEmpty();
+    }
+  });
+  flushEmpty();
+
+  // Khoảng dòng đều — đồng bộ Outlook Mac (margin 0, không 0.6em)
+  box.querySelectorAll("p, div").forEach((el) => {
+    if (el.closest("td, th") && el.tagName === "DIV" && el.querySelector("table")) return;
+    el.style.margin = "0";
+    el.style.padding = "0";
+    el.style.lineHeight = el.closest("td, th") ? "1.25" : "1.35";
+  });
+
   box.querySelectorAll("table").forEach((t) => {
-    t.style.borderCollapse = t.style.borderCollapse || "collapse";
-    t.style.borderSpacing = t.style.borderSpacing || "0";
+    t.style.borderCollapse = "collapse";
+    t.style.borderSpacing = "0";
+    t.style.margin = "6pt 0";
     // Bỏ width/max-width % — Word + DPI laptop hay render lệch so với desktop
     if (/width\s*:\s*100%/i.test(t.style.cssText || "")) t.style.width = "";
     if (/max-width\s*:\s*100%/i.test(t.style.cssText || "")) t.style.maxWidth = "";
     if (!t.getAttribute("border")) t.setAttribute("border", "1");
     if (!t.getAttribute("cellspacing")) t.setAttribute("cellspacing", "0");
     if (!t.getAttribute("cellpadding")) t.setAttribute("cellpadding", "4");
+  });
+
+  box.querySelectorAll("td, th").forEach((cell) => {
+    if (!cell.style.padding) cell.style.padding = "3pt 4pt";
+    cell.style.verticalAlign = cell.style.verticalAlign || "middle";
+    cell.style.lineHeight = cell.style.lineHeight || "1.25";
   });
 
   // px → pt (96dpi cố định) — đồng bộ desktop 100% vs laptop 125%/150%
@@ -97,9 +145,9 @@ function normalizeHtmlForOutlook(html) {
   let root = box.firstElementChild;
   if (root && root.tagName === "DIV" && box.childNodes.length === 1) {
     root.setAttribute("data-vt-body", "1");
-    root.style.margin = root.style.margin || "0";
-    root.style.padding = root.style.padding || "0";
-    root.style.lineHeight = root.style.lineHeight || "1.35";
+    root.style.margin = "0";
+    root.style.padding = "0";
+    root.style.lineHeight = "1.35";
     return box.innerHTML;
   }
 
@@ -133,9 +181,11 @@ function frameDoc(html) {
     <style>
       html,body{margin:0;padding:12px;background:#fff;color:#222;overflow:auto}
       body{font-family:Aptos,Calibri,"Segoe UI",Arial,sans-serif;font-size:12pt;line-height:1.35}
-      table{border-collapse:collapse;max-width:none}
+      table{border-collapse:collapse;border-spacing:0;max-width:none;margin:6pt 0}
+      td,th{padding:3pt 4pt;line-height:1.25;vertical-align:middle}
       img{height:auto}
-      p{margin:0 0 0.6em}
+      p,div{margin:0;padding:0;line-height:1.35}
+      td p,th p,td div,th div{margin:0;line-height:1.25}
     </style></head><body>${html || ""}</body></html>`;
 }
 
@@ -664,7 +714,7 @@ async function insertImagesFromFiles(files) {
         ? ` width="${width}" height="${height}" style="width:${width}px;height:${height}px;"`
         : ` style="height:auto;"`;
     insertHtmlAtCursor(
-      `<p style="margin:0 0 0.6em;"><img src="${uri}" alt="${escapeHtml(file.name || "image")}"${sizeAttrs} /></p>`
+      `<p style="margin:0;padding:0;line-height:1.35;"><img src="${uri}" alt="${escapeHtml(file.name || "image")}"${sizeAttrs} /></p>`
     );
   }
   scheduleSaveCompose();

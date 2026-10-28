@@ -536,12 +536,52 @@ def set_mac_clipboard_html(html: str) -> None:
         pb.setString_forType_(plain, NSPasteboardTypeString)
 
 
+def unwrap_outlook_copy_fragment(html: str) -> str:
+    """
+    HTML copy từ Outlook New Mail → fragment sạch cho khung Soạn.
+
+    Outlook Mac/Win hay bọc html/body/WordSection + MsoNormal margin lớn;
+    nếu giữ nguyên rồi paste ngược lại New Mail → khoảng dòng lệch / chồng spacing.
+    """
+    s = strip_cf_html_headers(html or "").strip()
+    if not s:
+        return ""
+
+    # Lấy nội dung <body> nếu copy cả document
+    m = re.search(r"(?is)<body[^>]*>(.*)</body>", s)
+    if m:
+        s = m.group(1).strip()
+
+    # Bỏ wrapper WordSection / OutlookMessageBody — giữ bên trong
+    for _ in range(4):
+        m = re.match(
+            r"(?is)^\s*<(div)[^>]*(?:WordSection|OutlookMessageBody|elementToProof)[^>]*>"
+            r"(.*)</\1>\s*$",
+            s,
+        )
+        if not m:
+            break
+        s = m.group(2).strip()
+
+    # Nhiễu Word: <o:p>&nbsp;</o:p>, conditional comments
+    s = re.sub(r"(?is)<!--\[if[^\]]*\]>.*?<!\[endif\]-->", "", s)
+    s = re.sub(r"(?is)<o:p[^>]*>\s*(?:&nbsp;|\xa0|&#160;)?\s*</o:p>", "", s)
+    s = re.sub(r"(?is)</?o:[a-z0-9]+[^>]*>", "", s)
+    return s.strip()
+
+
 def clipboard_html_for_compose(browser_html: str = "") -> str:
     """
     Windows: CF_HTML. macOS: WebArchive/HTML AppKit.
-    Nhúng ảnh → data URI; giữ font/style gốc tối đa (không ép Aptos).
+    Vòng Outlook → Soạn → Outlook: nhúng ảnh + chuẩn hóa khoảng dòng (không ép font).
     """
-    from .outlook_html import convert_px_font_sizes_to_pt, harden_tables_for_outlook
+    from .outlook_html import (
+        convert_px_font_sizes_to_pt,
+        harden_tables_for_outlook,
+        normalize_paragraph_spacing,
+        strip_trailing_empty_blocks,
+        wrap_root_body,
+    )
 
     html = ""
     cid_map: dict[str, str] = {}
@@ -560,6 +600,7 @@ def clipboard_html_for_compose(browser_html: str = "") -> str:
     if not (html or "").strip():
         html = browser_html or ""
 
+    html = unwrap_outlook_copy_fragment(html)
     html = embed_local_and_cid_images(html, cid_map)
     # Nếu browser HTML còn cid/file nhưng clip có map ảnh — gắn lại
     if browser_html and cid_map:
@@ -567,4 +608,8 @@ def clipboard_html_for_compose(browser_html: str = "") -> str:
     html = embed_remote_http_images(html)
     html = convert_px_font_sizes_to_pt(html)
     html = harden_tables_for_outlook(html)
+    # Đồng bộ Soạn với lúc paste lại New Mail (margin 0 + gộp Enter trống)
+    html = normalize_paragraph_spacing(html)
+    html = strip_trailing_empty_blocks(html)
+    html = wrap_root_body(html)
     return html.strip()
