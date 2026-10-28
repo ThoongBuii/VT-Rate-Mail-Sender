@@ -2,12 +2,12 @@
 
 AS (mac.py): New Mail + To/Cc/Subject  →  caret mặc định ở To
 HID (trong KeyboardLock — chặn gõ user):
-  1) Kéo focus Outlook + raise New Mail
+  1) Raise New Mail (Outlook đã activate từ AS)
   2) AX set focused ô Subject (AXSplitGroup / description «Subject:»)
   3) Tab đúng 1 lần → body
   4) Cmd+V → chờ ngắn → Cmd+Return
 
-Không chuột. Không thử AX Body (Legacy không cho).
+Không chuột. Không force Space. Không thử AX Body (Legacy không cho).
 """
 
 from __future__ import annotations
@@ -333,8 +333,8 @@ def focus_subject_carefully(*, subject_hint: str = "") -> str:
     """Raise New Mail + AX focused Subject (retry 1 lần)."""
     if not wait_compose_window(timeout=1.6, subject_hint=subject_hint):
         raise RuntimeError(
-            "Không focus được cửa sổ New Mail (Outlook bị app khác che?).\n"
-            "Giữ Space lúc gửi."
+            "Không focus được cửa sổ New Mail.\n"
+            "Legacy ON · thử lại."
         )
     ax = _focus_subject_via_ax(subject_hint=subject_hint)
     if ax != "ok":
