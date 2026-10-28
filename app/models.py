@@ -6,6 +6,10 @@ from typing import Any, Optional
 import time
 
 
+class ManualCompose(RuntimeError):
+    """New Mail để mở — user gửi/sửa tay. Không đóng cửa sổ, không xếp gửi lại."""
+
+
 class MailStatus(str, Enum):
     PENDING = "pending"
     READY = "ready"

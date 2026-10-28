@@ -2,12 +2,12 @@
 
 AS (mac.py): New Mail + To/Cc/Subject  →  caret mặc định ở To
 HID (trong KeyboardLock — chặn gõ user / Zalo):
-  1) open(msg id) + buộc Outlook frontmost (Zalo đang type vẫn chiếm focus)
-  2) AX set focused ô Subject (AXSplitGroup / description «Subject:»)
-  3) Tab đúng 1 lần → body
-  4) Cmd+V → chờ ngắn → Cmd+Return
+  1) open(msg id) + buộc Outlook frontmost
+  2) AX focus ô To, rồi select ô Subject (field editor thật)
+  3) Đúng 1 phím Tab thuần (không Cmd) gửi thẳng Outlook → body
+  4) Cmd+V → Cmd+Return
 
-Không chuột. Không trả focus app khác. Không thử AX Body (Legacy không cho).
+Không đọc lại focus trước khi dán. Không chuột. Không thử AX Body.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from __future__ import annotations
 import subprocess
 import time
 
-from .mac_keylock import get_keyboard_lock
+from .mac_keylock import SYNTH_USERDATA, get_keyboard_lock
 
 
 def _run_nsapplescript(source: str) -> str:
@@ -252,31 +252,146 @@ def wait_compose_window(
     return False
 
 
-def _cg_key(keycode: int, *, flags: int = 0) -> None:
+_SYNTH_SOURCE = None
+_SYNTH_SOURCE_FAILED = False
+
+
+def _synth_source():
+    """Event source có userData — tap nhận ra phím app dù allow_synth đã tắt."""
+    global _SYNTH_SOURCE, _SYNTH_SOURCE_FAILED
+    if _SYNTH_SOURCE_FAILED:
+        return None
+    if _SYNTH_SOURCE is not None:
+        return _SYNTH_SOURCE
+    try:
+        from Quartz import (  # type: ignore
+            CGEventSourceCreate,
+            CGEventSourceSetUserData,
+            kCGEventSourceStatePrivate,
+        )
+
+        # Private: không ăn modifier bàn phím thật, không để Cmd dính sang Tab mail sau.
+        src = CGEventSourceCreate(kCGEventSourceStatePrivate)
+        CGEventSourceSetUserData(src, SYNTH_USERDATA)
+        _SYNTH_SOURCE = src
+    except Exception:  # noqa: BLE001
+        _SYNTH_SOURCE_FAILED = True
+        return None
+    return _SYNTH_SOURCE
+
+
+def _mark_synth(event) -> None:
+    try:
+        from Quartz import CGEventSetIntegerValueField, kCGEventSourceUserData  # type: ignore
+
+        CGEventSetIntegerValueField(event, kCGEventSourceUserData, SYNTH_USERDATA)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_OUTLOOK_PID = 0
+
+
+def _outlook_pid() -> int:
+    global _OUTLOOK_PID
+    if _OUTLOOK_PID > 0:
+        return _OUTLOOK_PID
+    try:
+        from AppKit import NSWorkspace  # type: ignore
+
+        for app in NSWorkspace.sharedWorkspace().runningApplications():
+            bid = str(app.bundleIdentifier() or "")
+            name = str(app.localizedName() or "")
+            if bid == "com.microsoft.Outlook" or name == "Microsoft Outlook":
+                _OUTLOOK_PID = int(app.processIdentifier())
+                return _OUTLOOK_PID
+    except Exception:  # noqa: BLE001
+        return 0
+    return 0
+
+
+def _post_to_outlook(event) -> None:
+    """Đưa phím thẳng vào Outlook — tap phiên (khoá phím) không đứng trên đường này."""
+    from Quartz import CGEventPost, CGEventPostToPid, kCGHIDEventTap  # type: ignore
+
+    pid = _outlook_pid()
+    if pid > 0:
+        CGEventPostToPid(pid, event)
+        return
+    CGEventPost(kCGHIDEventTap, event)
+
+
+def _clear_outlook_modifiers() -> None:
+    """Thả Cmd/Shift/Opt/Ctrl. Cmd dính từ mail trước biến Tab thành Cmd+Tab."""
     from Quartz import (  # type: ignore
+        CGEventCreate,
         CGEventCreateKeyboardEvent,
         CGEventPost,
         CGEventSetFlags,
+        CGEventSetType,
+        kCGEventFlagsChanged,
         kCGHIDEventTap,
+    )
+
+    src = _synth_source()
+    flags_ev = CGEventCreate(src)
+    if flags_ev is not None:
+        CGEventSetType(flags_ev, kCGEventFlagsChanged)
+        CGEventSetFlags(flags_ev, 0)
+        _post_to_outlook(flags_ev)
+    for code in (55, 56, 58, 59):
+        up = CGEventCreateKeyboardEvent(None, code, False)
+        CGEventSetFlags(up, 0)
+        CGEventPost(kCGHIDEventTap, up)
+
+
+def _cg_key(keycode: int, *, flags: int = 0) -> None:
+    from Quartz import (  # type: ignore
+        CGEventCreateKeyboardEvent,
+        CGEventSetFlags,
     )
 
     lock = get_keyboard_lock()
     lock.allow_synth(True)
     try:
-        down = CGEventCreateKeyboardEvent(None, keycode, True)
-        up = CGEventCreateKeyboardEvent(None, keycode, False)
-        if flags:
-            CGEventSetFlags(down, flags)
-            CGEventSetFlags(up, flags)
-        CGEventPost(kCGHIDEventTap, down)
+        src = _synth_source()
+        down = CGEventCreateKeyboardEvent(src, keycode, True)
+        up = CGEventCreateKeyboardEvent(src, keycode, False)
+        _mark_synth(down)
+        _mark_synth(up)
+        CGEventSetFlags(down, flags)
+        CGEventSetFlags(up, flags)
+        _post_to_outlook(down)
         time.sleep(0.012)
-        CGEventPost(kCGHIDEventTap, up)
+        _post_to_outlook(up)
+        time.sleep(0.04)
+        if flags:
+            _clear_outlook_modifiers()
     finally:
         lock.allow_synth(False)
 
 
-def _cg_tab() -> None:
-    _cg_key(48)
+def _tab_once() -> None:
+    """Đúng một Tab thuần tới Outlook. Tap tắt nên không nuốt; Cmd đã thả nên không thành Cmd+Tab."""
+    lock = get_keyboard_lock()
+    lock.set_enabled(False)
+    try:
+        _clear_outlook_modifiers()
+        _run_nsapplescript(
+            '''
+tell application "System Events"
+  tell process "Microsoft Outlook"
+    set frontmost to true
+  end tell
+  delay 0.03
+  key code 48
+end tell
+'''
+        )
+        # Tap vẫn tắt cho tới khi Outlook nhận Tab. Bật lại sớm thì tap nuốt đúng phím này.
+        time.sleep(0.06)
+    finally:
+        lock.set_enabled(True)
 
 
 def _cg_cmd_v() -> None:
@@ -291,27 +406,45 @@ def _cg_cmd_return() -> None:
     _cg_key(36, flags=kCGEventFlagMaskCommand)
 
 
-def _focus_subject_via_ax(*, subject_hint: str = "") -> str:
-    """
-    AX set focused Subject trong AXSplitGroup.
-    Trả: ok | no-win | no-field | err:...
-    """
+_TAIL_FOCUS = """
+    if addrField is not missing value then
+      try
+        set focused of addrField to true
+      end try
+      delay 0.04
+    end if
+    set focused of found to true
+    try
+      perform action "AXPress" of found
+    end try
+    try
+      set value of attribute "AXSelectedTextRange" of found to {1, 500}
+    end try
+    delay 0.05
+    return "ok"
+"""
+
+
+def _subject_field_script(subject_hint: str, tail: str, *, activate: bool) -> str:
+    """Tìm ô Subject. activate=False khi chỉ đọc — tránh activate kéo focus ngược lại."""
     want = _esc_as((subject_hint or "").strip())
     want_short = _esc_as((subject_hint or "").strip()[:56])
-    script = f'''
-tell application "Microsoft Outlook" to activate
-tell application "System Events"
-  tell process "Microsoft Outlook"
-    set frontmost to true
-{_compose_picker_as(subject_hint)}
-    if targetWin is missing value then return "no-win"
+    head = 'tell application "Microsoft Outlook" to activate\n' if activate else ""
+    front = "    set frontmost to true\n" if activate else ""
+    raise_win = """
     try
       perform action "AXRaise" of targetWin
     end try
-
+""" if activate else ""
+    return f"""{head}tell application "System Events"
+  tell process "Microsoft Outlook"
+{front}{_compose_picker_as(subject_hint)}
+    if targetWin is missing value then return "no-win"
+{raise_win}
     set wantSubj to "{want}"
     set wantShort to "{want_short}"
     set found to missing value
+    set addrField to missing value
     set splitG to missing value
     try
       set splitG to item 1 of (UI elements of targetWin)
@@ -322,9 +455,11 @@ tell application "System Events"
         repeat with tf in text fields of splitG
           try
             set dsc to description of tf as text
-            if dsc is "Subject:" or dsc begins with "Subject" or dsc contains "Chủ đề" then
+            if addrField is missing value and (dsc is "To:" or dsc begins with "To:" or dsc is "To") then
+              set addrField to tf
+            end if
+            if found is missing value and (dsc is "Subject:" or dsc begins with "Subject" or dsc contains "Chủ đề") then
               set found to tf
-              exit repeat
             end if
           end try
         end repeat
@@ -351,9 +486,11 @@ tell application "System Events"
               repeat with tf in text fields of gkid
                 try
                   set dsc to description of tf as text
-                  if dsc is "Subject:" or dsc begins with "Subject" then
+                  if addrField is missing value and (dsc is "To:" or dsc begins with "To:" or dsc is "To") then
+                    set addrField to tf
+                  end if
+                  if found is missing value and (dsc is "Subject:" or dsc begins with "Subject" or dsc contains "Chủ đề") then
                     set found to tf
-                    exit repeat
                   end if
                 end try
                 try
@@ -372,20 +509,22 @@ tell application "System Events"
     end if
 
     if found is missing value then return "no-field"
-
-    set focused of found to true
-    delay 0.03
-    try
-      if (focused of found) is true then return "ok"
-    end try
-    set focused of found to true
-    delay 0.03
-    return "ok"
+{tail}
   end tell
 end tell
-'''
+"""
+
+
+def _focus_subject_via_ax(*, subject_hint: str = "") -> str:
+    """
+    AX set focused Subject trong AXSplitGroup.
+    Trả: ok | no-win | no-field | err:...
+    """
     try:
-        return _run_nsapplescript(script).strip().lower() or "no-field"
+        raw = _run_nsapplescript(
+            _subject_field_script(subject_hint, _TAIL_FOCUS, activate=True)
+        )
+        return (raw or "").strip().lower() or "no-field"
     except Exception as exc:  # noqa: BLE001
         return f"err:{exc}"
 
@@ -414,28 +553,18 @@ def focus_subject_carefully(
     return "ax"
 
 
-def _subject_tab_paste(
-    *, subject_hint: str = "", msg_id: str = "", already_raised: bool = False
-) -> None:
-    """Burst: AX Subject → Tab → Cmd+V (timing ngắn)."""
-    focus_subject_carefully(
-        subject_hint=subject_hint, msg_id=msg_id, already_raised=already_raised
-    )
-    _cg_tab()
-    time.sleep(0.04)
-    _cg_cmd_v()
-    time.sleep(0.22)
-
-
 def paste_and_send_keyboard(
     *,
     subject_hint: str = "",
     msg_id: str = "",
     already_raised: bool = False,
 ) -> None:
-    """AX Subject → Tab 1 → paste → Cmd+Return."""
-    _subject_tab_paste(
+    """To → select Subject → đúng 1 Tab thuần → paste → Cmd+Return."""
+    focus_subject_carefully(
         subject_hint=subject_hint, msg_id=msg_id, already_raised=already_raised
     )
+    _tab_once()
+    _cg_cmd_v()
+    time.sleep(0.18)
     _cg_cmd_return()
-    time.sleep(0.05)
+    time.sleep(0.04)

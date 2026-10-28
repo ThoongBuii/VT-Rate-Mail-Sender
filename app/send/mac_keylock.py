@@ -1,6 +1,8 @@
 """Khoá phím macOS tạm thời (CGEventTap) — chặn gõ user, cho phép phím synthetic của app.
 
 Cần Accessibility (cùng quyền với AX Subject).
+Phím do app bắn mang SYNTH_USERDATA nên tap cho qua kể cả khi đang nuốt phím thật.
+allow_synth đếm lồng nhau, chỉ bật trong lúc post từng phím — không mở khóa suốt burst.
 """
 
 from __future__ import annotations
@@ -8,6 +10,12 @@ from __future__ import annotations
 import threading
 import time
 from typing import Optional
+
+# CGEventSource userData — tap luôn cho qua, kể cả khi allow_synth đã hạ.
+SYNTH_USERDATA = 0x56544D41
+
+# CGEventType khi tap bị hệ thống tắt (CGEventTypes.h).
+_TAP_DISABLED = frozenset({-1, -2, 0xFFFFFFFF, 0xFFFFFFFE})
 
 
 class KeyboardLock:
@@ -22,6 +30,7 @@ class KeyboardLock:
         self._thread: Optional[threading.Thread] = None
         self._loop = None
         self._allow_synth = False
+        self._synth_depth = 0
         self._ready = threading.Event()
         self._failed: Optional[str] = None
 
@@ -30,7 +39,24 @@ class KeyboardLock:
         return self._tap is not None and self._failed is None
 
     def allow_synth(self, on: bool) -> None:
-        self._allow_synth = bool(on)
+        """Bật/tắt theo cặp. Lồng nhau: cờ chỉ tắt khi mọi lớp đã thả."""
+        if on:
+            self._synth_depth += 1
+        else:
+            self._synth_depth = max(0, self._synth_depth - 1)
+        self._allow_synth = self._synth_depth > 0
+
+    def set_enabled(self, on: bool) -> None:
+        """Tắt tap trong lúc bắn đúng một Tab — tap không còn đường nuốt phím đó."""
+        tap = self._tap
+        if tap is None:
+            return
+        try:
+            from Quartz import CGEventTapEnable  # type: ignore
+
+            CGEventTapEnable(tap, bool(on))
+        except Exception:  # noqa: BLE001
+            pass
 
     def start(self) -> bool:
         if self._tap is not None:
@@ -72,6 +98,7 @@ class KeyboardLock:
         self._src = None
         self._loop = None
         self._thread = None
+        self._synth_depth = 0
         self._allow_synth = False
 
     def _run_loop(self) -> None:
@@ -103,8 +130,36 @@ class KeyboardLock:
             | CGEventMaskBit(kCGEventFlagsChanged)
         )
         lock = self
+        tap_holder: dict = {}
+        get_mark = None
+        mark_field = None
+        try:
+            from Quartz import (  # type: ignore
+                CGEventGetIntegerValueField,
+                kCGEventSourceUserData,
+            )
+
+            get_mark = CGEventGetIntegerValueField
+            mark_field = kCGEventSourceUserData
+        except Exception:  # noqa: BLE001
+            pass
 
         def _callback(_proxy, etype, event, _refcon):
+            # Tap bị timeout thì hệ thống tắt hẳn — mail sau mất cả khoá lẫn phím app.
+            if etype in _TAP_DISABLED:
+                tap = tap_holder.get("tap")
+                if tap is not None:
+                    try:
+                        CGEventTapEnable(tap, True)
+                    except Exception:  # noqa: BLE001
+                        pass
+                return event
+            if get_mark is not None and event is not None:
+                try:
+                    if int(get_mark(event, mark_field)) == SYNTH_USERDATA:
+                        return event
+                except Exception:  # noqa: BLE001
+                    pass
             if lock._allow_synth:
                 return event
             if etype in (kCGEventKeyDown, kCGEventKeyUp, kCGEventFlagsChanged):
@@ -120,6 +175,7 @@ class KeyboardLock:
                 _callback,
                 None,
             )
+            tap_holder["tap"] = tap
         except Exception as exc:  # noqa: BLE001
             self._failed = str(exc)
             self._ready.set()

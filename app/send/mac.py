@@ -1,8 +1,8 @@
 """macOS Outlook Legacy — quy trình chuẩn.
 
 1) Khoá phím 0.5s → AS New Mail + To/Cc/Subject → msg_id
-2) Claim đúng cửa sổ theo msg_id → AX Subject → Tab → paste → Send
-3) Đóng đúng msg_id nếu còn mở (không Cmd+W đụng compose khác; không quét Sent)
+2) Claim đúng cửa sổ theo msg_id → focus Subject → đúng 1 Tab thuần → paste → Send
+3) Paste lỗi thì giữ cửa sổ để gửi tay (không đóng, không xếp gửi lại)
 
 Không trả Zalo. Không đóng/verify lan sang cửa sổ New Mail của user.
 """
@@ -17,7 +17,7 @@ from ctypes import c_bool, c_void_p, cdll
 from pathlib import Path
 from typing import Any, Optional
 
-from ..models import AppConfig
+from ..models import AppConfig, ManualCompose
 from ..paths import user_data_dir
 from .html_merge import html_visible_text
 
@@ -596,11 +596,9 @@ end tell
                     already_raised=True,
                 )
             except Exception as exc:  # noqa: BLE001
-                # Chỉ đóng đúng msg_id của autosend — không Cmd+W cửa sổ khác
-                close_compose_by_id(msg_id)
-                raise RuntimeError(
-                    "Paste/gửi lỗi trên New Mail.\n"
-                    "AX Subject → Tab → paste → Send (phím đã khoá trong burst).\n"
+                # Giữ cửa sổ để user gửi/sửa tay. Không đóng, không xếp gửi lại.
+                raise ManualCompose(
+                    "Bỏ qua mail này — cửa sổ New Mail vẫn mở để gửi và sửa tay.\n"
                     f"{exc}"
                 ) from exc
 
