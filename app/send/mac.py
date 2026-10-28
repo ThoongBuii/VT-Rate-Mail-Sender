@@ -1,10 +1,10 @@
 """macOS Outlook Legacy — quy trình chuẩn.
 
-1) Khoá phím 0.5s trước → AS New Mail + To/Cc/Subject
-2) open(msg id) + buộc Outlook frontmost (chống Zalo giữ focus) → AX Subject → Tab → paste → Send
-3) Mở khoá phím → verify Sent
+1) Khoá phím 0.5s → AS New Mail + To/Cc/Subject
+2) Claim compose 1 lần (open id) → AX Subject → Tab → paste → Send (burst nhanh)
+3) Verify Sent
 
-Không trả focus về Zalo/app khác. Giữ Outlook đến hết paste/Send.
+Không trả Zalo. Không claim/wait chồng nhiều vòng.
 """
 
 from __future__ import annotations
@@ -590,13 +590,21 @@ end tell
         return ""
 
     def _paste_and_send_burst(
-        self, *, has_cc: bool, subject: str = "", msg_id: str = ""
+        self,
+        *,
+        has_cc: bool,
+        subject: str = "",
+        msg_id: str = "",
+        already_raised: bool = False,
     ) -> None:
         """AX Subject → Tab 1 → paste → Cmd+Return."""
         from .mac_hid import paste_and_send_keyboard
 
         paste_and_send_keyboard(
-            has_cc=has_cc, subject_hint=subject, msg_id=msg_id
+            has_cc=has_cc,
+            subject_hint=subject,
+            msg_id=msg_id,
+            already_raised=already_raised,
         )
 
     def _ui_send(self, *, subject: str = "", msg_id: str = "") -> None:
@@ -924,10 +932,9 @@ end tell
             if not msg_id:
                 raise RuntimeError("Không lấy được id New Mail.")
 
-            # Zalo đang type: New Mail tạo được nhưng Outlook không front
-            # → open lại theo id + claim front đến khi thấy compose.
+            # Claim compose 1 lần (timeout ngắn) — không claim chồng trước paste.
             if not wait_compose_window(
-                timeout=3.2, subject_hint=subject, msg_id=msg_id
+                timeout=1.4, subject_hint=subject, msg_id=msg_id
             ):
                 if not claim_outlook_compose(
                     subject_hint=subject, msg_id=msg_id
@@ -940,11 +947,11 @@ end tell
 
             try:
                 set_mac_clipboard_html(prepared)
-                time.sleep(0.02)
-                # Claim lần nữa ngay trước paste (Zalo có thể vừa cướp lại)
-                claim_outlook_compose(subject_hint=subject, msg_id=msg_id)
                 self._paste_and_send_burst(
-                    has_cc=has_cc, subject=subject, msg_id=msg_id
+                    has_cc=has_cc,
+                    subject=subject,
+                    msg_id=msg_id,
+                    already_raised=True,
                 )
             except Exception as exc:  # noqa: BLE001
                 self._close_compose_ui_windows()
