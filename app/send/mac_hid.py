@@ -1,13 +1,13 @@
 """Mac HID tối thiểu — quy trình chuẩn (đã probe Legacy):
 
 AS (mac.py): New Mail + To/Cc/Subject  →  caret mặc định ở To
-HID (trong KeyboardLock — chặn gõ user):
-  1) Raise New Mail (Outlook đã activate từ AS)
+HID (trong KeyboardLock — chặn gõ user / Zalo):
+  1) open(msg id) + buộc Outlook frontmost (Zalo đang type vẫn chiếm focus)
   2) AX set focused ô Subject (AXSplitGroup / description «Subject:»)
   3) Tab đúng 1 lần → body
   4) Cmd+V → chờ ngắn → Cmd+Return
 
-Không chuột. Không force Space. Không thử AX Body (Legacy không cho).
+Không chuột. Không trả focus app khác. Không thử AX Body (Legacy không cho).
 """
 
 from __future__ import annotations
@@ -56,13 +56,21 @@ def _esc_as(s: str) -> str:
 
 
 def _compose_picker_as(subject_hint: str) -> str:
-    """Chọn cửa sổ New Mail (title Legacy ≈ subject • account)."""
+    """Chọn cửa sổ New Mail (title Legacy ≈ subject • account; ưu tiên đuôi agency)."""
     full = (subject_hint or "").strip()
     needle = _esc_as(full[:40])
     needle2 = _esc_as(full[:24]) if len(full) >= 24 else needle
+    # Title hay dạng «… - Agency - Account» — đuôi agency ổn định hơn đầu subject
+    tail = full
+    if " - " in full:
+        tail = full.rsplit(" - ", 1)[-1].strip()
+    elif "||" in full:
+        tail = full.rsplit("||", 1)[-1].strip()
+    needle_tail = _esc_as(tail[:36]) if tail else ""
     return f'''
     set needle to "{needle}"
     set needle2 to "{needle2}"
+    set needleTail to "{needle_tail}"
     set targetWin to missing value
 
     try
@@ -72,6 +80,8 @@ def _compose_picker_as(subject_hint: str) -> str:
         set targetWin to fw
       else if needle2 is not "" and fn contains needle2 then
         set targetWin to fw
+      else if needleTail is not "" and fn contains needleTail then
+        set targetWin to fw
       else if (fn contains "Untitled") or (fn contains "@") or (fn contains "New Message") or (fn contains "Outgoing") then
         set targetWin to fw
       else if (length of fn > 24) and (fn does not contain "Inbox") and (fn does not contain "Sent items") and (fn does not contain "Sent Items") and (fn does not contain "Drafts") and (fn does not contain "Deleted") then
@@ -79,11 +89,11 @@ def _compose_picker_as(subject_hint: str) -> str:
       end if
     end try
 
-    if targetWin is missing value and needle is not "" then
+    if targetWin is missing value then
       repeat with w in windows
         try
           set n to name of w as text
-          if n contains needle or (needle2 is not "" and n contains needle2) then
+          if (needle is not "" and n contains needle) or (needle2 is not "" and n contains needle2) or (needleTail is not "" and n contains needleTail) then
             set targetWin to w
             exit repeat
           end if
@@ -118,6 +128,16 @@ def _compose_picker_as(subject_hint: str) -> str:
 
 
 def activate_outlook(*, settle: float = 0.03) -> None:
+    """Buộc Outlook lên front — Zalo đang type thường giữ frontmost nếu chỉ activate nhẹ."""
+    try:
+        subprocess.run(
+            ["open", "-a", "Microsoft Outlook"],
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+    except Exception:  # noqa: BLE001
+        pass
     try:
         _run_nsapplescript(
             '''
@@ -137,6 +157,62 @@ end tell
         )
     if settle > 0:
         time.sleep(settle)
+
+
+def outlook_is_frontmost() -> bool:
+    try:
+        name = _run_nsapplescript(
+            'tell application "System Events" to get name of first application process whose frontmost is true'
+        ).strip().lower()
+        return "outlook" in name
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def open_compose_by_id(msg_id: str) -> bool:
+    """Mở lại New Mail theo id — kéo cửa sổ compose lên (kể cả khi Zalo đang front)."""
+    mid = (msg_id or "").strip()
+    if not mid or not mid.isdigit():
+        return False
+    script = f'''
+tell application "Microsoft Outlook"
+  activate
+  try
+    set msg to outgoing message id {mid}
+    open msg
+    return "yes"
+  on error
+    try
+      set msg to message id {mid}
+      open msg
+      return "yes"
+    on error
+      return "no"
+    end try
+  end try
+end tell
+'''
+    try:
+        return _run_nsapplescript(script).strip().lower().startswith("yes")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def claim_outlook_compose(*, subject_hint: str = "", msg_id: str = "") -> bool:
+    """
+    Một vòng: open(id) → activate → AXRaise compose.
+    Trả True nếu đã chọn được cửa sổ New Mail (Outlook front).
+    """
+    if msg_id:
+        open_compose_by_id(msg_id)
+        time.sleep(0.06)
+    activate_outlook(settle=0.05)
+    if not outlook_is_frontmost():
+        activate_outlook(settle=0.08)
+        if msg_id:
+            open_compose_by_id(msg_id)
+            time.sleep(0.05)
+    return raise_compose_window(subject_hint=subject_hint)
 
 
 def raise_compose_window(*, subject_hint: str = "") -> bool:
@@ -163,18 +239,24 @@ end tell
         return False
 
 
-def wait_compose_window(*, timeout: float = 1.8, subject_hint: str = "") -> bool:
-    deadline = time.time() + max(0.2, timeout)
+def wait_compose_window(
+    *, timeout: float = 3.0, subject_hint: str = "", msg_id: str = ""
+) -> bool:
+    """Chờ New Mail — mỗi vòng reopen theo id + claim front (chống Zalo giữ focus)."""
+    deadline = time.time() + max(0.3, timeout)
     while time.time() < deadline:
-        activate_outlook(settle=0.02)
-        if raise_compose_window(subject_hint=subject_hint):
-            return True
-        time.sleep(0.05)
+        if claim_outlook_compose(subject_hint=subject_hint, msg_id=msg_id):
+            if outlook_is_frontmost():
+                return True
+            # Đã thấy cửa sổ nhưng Zalo vừa cướp lại — claim thêm 1 lần
+            if claim_outlook_compose(subject_hint=subject_hint, msg_id=msg_id):
+                return True
+        time.sleep(0.08)
     return False
 
 
-def has_compose_window(*, subject_hint: str = "") -> bool:
-    return raise_compose_window(subject_hint=subject_hint)
+def has_compose_window(*, subject_hint: str = "", msg_id: str = "") -> bool:
+    return claim_outlook_compose(subject_hint=subject_hint, msg_id=msg_id)
 
 
 def _cg_key(keycode: int, *, flags: int = 0) -> None:
@@ -325,21 +407,24 @@ end tell
         return f"err:{exc}"
 
 
-def probe_subject_ax(*, subject_hint: str = "") -> str:
+def probe_subject_ax(*, subject_hint: str = "", msg_id: str = "") -> str:
+    if msg_id:
+        claim_outlook_compose(subject_hint=subject_hint, msg_id=msg_id)
     return _focus_subject_via_ax(subject_hint=subject_hint)
 
 
-def focus_subject_carefully(*, subject_hint: str = "") -> str:
-    """Raise New Mail + AX focused Subject (retry 1 lần)."""
-    if not wait_compose_window(timeout=1.6, subject_hint=subject_hint):
+def focus_subject_carefully(*, subject_hint: str = "", msg_id: str = "") -> str:
+    """Claim Outlook front + raise New Mail + AX Subject (chống Zalo giữ focus)."""
+    if not wait_compose_window(
+        timeout=3.0, subject_hint=subject_hint, msg_id=msg_id
+    ):
         raise RuntimeError(
-            "Không focus được cửa sổ New Mail.\n"
+            "Không focus được cửa sổ New Mail (Zalo đang giữ front?).\n"
             "Legacy ON · thử lại."
         )
     ax = _focus_subject_via_ax(subject_hint=subject_hint)
     if ax != "ok":
-        activate_outlook(settle=0.03)
-        raise_compose_window(subject_hint=subject_hint)
+        claim_outlook_compose(subject_hint=subject_hint, msg_id=msg_id)
         ax = _focus_subject_via_ax(subject_hint=subject_hint)
     if ax != "ok":
         raise RuntimeError(
@@ -350,33 +435,38 @@ def focus_subject_carefully(*, subject_hint: str = "") -> str:
     return "ax"
 
 
-def _subject_tab_paste(*, subject_hint: str = "") -> None:
+def _subject_tab_paste(*, subject_hint: str = "", msg_id: str = "") -> None:
     """Chuẩn: AX Subject → Tab 1 → Cmd+V → chờ ngắn."""
-    focus_subject_carefully(subject_hint=subject_hint)
+    focus_subject_carefully(subject_hint=subject_hint, msg_id=msg_id)
     _cg_tab()
     time.sleep(0.08)
     _cg_cmd_v()
     time.sleep(0.36)
 
 
-def paste_body_keyboard(*, has_cc: bool = True, subject_hint: str = "") -> None:
+def paste_body_keyboard(
+    *, has_cc: bool = True, subject_hint: str = "", msg_id: str = ""
+) -> None:
     _ = has_cc
-    _subject_tab_paste(subject_hint=subject_hint)
+    _subject_tab_paste(subject_hint=subject_hint, msg_id=msg_id)
 
 
-def paste_and_send_keyboard(*, has_cc: bool = True, subject_hint: str = "") -> None:
+def paste_and_send_keyboard(
+    *, has_cc: bool = True, subject_hint: str = "", msg_id: str = ""
+) -> None:
     """AX Subject → Tab 1 → paste → Cmd+Return."""
     _ = has_cc
-    _subject_tab_paste(subject_hint=subject_hint)
+    _subject_tab_paste(subject_hint=subject_hint, msg_id=msg_id)
     _cg_cmd_return()
     time.sleep(0.08)
 
 
-def send_compose_cmd_return(*, already_in_body: bool = True, subject_hint: str = "") -> None:
-    activate_outlook(settle=0.03)
-    raise_compose_window(subject_hint=subject_hint)
+def send_compose_cmd_return(
+    *, already_in_body: bool = True, subject_hint: str = "", msg_id: str = ""
+) -> None:
+    claim_outlook_compose(subject_hint=subject_hint, msg_id=msg_id)
     if not already_in_body:
-        focus_subject_carefully(subject_hint=subject_hint)
+        focus_subject_carefully(subject_hint=subject_hint, msg_id=msg_id)
         _cg_tab()
         time.sleep(0.08)
     _cg_cmd_return()

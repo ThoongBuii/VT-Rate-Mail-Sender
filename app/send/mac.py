@@ -1,10 +1,10 @@
 """macOS Outlook Legacy — quy trình chuẩn.
 
-1) Khoá phím 0.5s trước → AS New Mail + To/Cc/Subject (Outlook activate)
-2) AX Subject → Tab 1 → Cmd+V → Cmd+Return
+1) Khoá phím 0.5s trước → AS New Mail + To/Cc/Subject
+2) open(msg id) + buộc Outlook frontmost (chống Zalo giữ focus) → AX Subject → Tab → paste → Send
 3) Mở khoá phím → verify Sent
 
-Không trả focus về Zalo/app khác — user tự quản lý. Chỉ tập trung Outlook + New Mail + paste.
+Không trả focus về Zalo/app khác. Giữ Outlook đến hết paste/Send.
 """
 
 from __future__ import annotations
@@ -589,16 +589,22 @@ end tell
             time.sleep(0.12)
         return ""
 
-    def _paste_and_send_burst(self, *, has_cc: bool, subject: str = "") -> None:
+    def _paste_and_send_burst(
+        self, *, has_cc: bool, subject: str = "", msg_id: str = ""
+    ) -> None:
         """AX Subject → Tab 1 → paste → Cmd+Return."""
         from .mac_hid import paste_and_send_keyboard
 
-        paste_and_send_keyboard(has_cc=has_cc, subject_hint=subject)
+        paste_and_send_keyboard(
+            has_cc=has_cc, subject_hint=subject, msg_id=msg_id
+        )
 
-    def _ui_send(self, *, subject: str = "") -> None:
+    def _ui_send(self, *, subject: str = "", msg_id: str = "") -> None:
         from .mac_hid import send_compose_cmd_return
 
-        send_compose_cmd_return(already_in_body=True, subject_hint=subject)
+        send_compose_cmd_return(
+            already_in_body=True, subject_hint=subject, msg_id=msg_id
+        )
 
     def _message_in_sent(self, subject: str, *, within_minutes: int = 5) -> bool:
         """
@@ -851,11 +857,11 @@ end tell
         attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
-        Khoá phím → Outlook New Mail + To/Cc/Subject → paste → Send.
-        Không trả focus về app khác (Zalo…) — để Outlook giữ focus đến hết.
+        Khoá phím → New Mail → claim Outlook front (open id) → paste → Send.
+        Không trả Zalo. Zalo đang type vẫn có thể giữ front — phải claim lại theo msg id.
         """
         from ..clipboard_html import set_mac_clipboard_html
-        from .mac_hid import raise_compose_window, wait_compose_window
+        from .mac_hid import claim_outlook_compose, wait_compose_window
         from .mac_keylock import keyboard_guard
 
         if not ensure_assistive_access(prompt=True):
@@ -899,7 +905,7 @@ tell application "Microsoft Outlook"
 end tell
 '''
 
-        # Toàn bộ trong khoá phím — không activate app khác, không trả Zalo
+        # Khoá phím (chặn gõ Zalo) → New Mail → claim Outlook → paste (không trả Zalo)
         with keyboard_guard(pre_focus_s=0.5):
             self._close_compose_ui_windows()
 
@@ -918,18 +924,28 @@ end tell
             if not msg_id:
                 raise RuntimeError("Không lấy được id New Mail.")
 
-            if not wait_compose_window(timeout=1.8, subject_hint=subject):
-                if not raise_compose_window(subject_hint=subject):
+            # Zalo đang type: New Mail tạo được nhưng Outlook không front
+            # → open lại theo id + claim front đến khi thấy compose.
+            if not wait_compose_window(
+                timeout=3.2, subject_hint=subject, msg_id=msg_id
+            ):
+                if not claim_outlook_compose(
+                    subject_hint=subject, msg_id=msg_id
+                ):
                     self._close_compose_ui_windows()
                     raise RuntimeError(
                         "New Mail đã tạo nhưng chưa thấy cửa sổ compose.\n"
-                        "Legacy ON · thử lại."
+                        "Zalo đang giữ focus? Legacy ON · thử lại."
                     )
 
             try:
                 set_mac_clipboard_html(prepared)
                 time.sleep(0.02)
-                self._paste_and_send_burst(has_cc=has_cc, subject=subject)
+                # Claim lần nữa ngay trước paste (Zalo có thể vừa cướp lại)
+                claim_outlook_compose(subject_hint=subject, msg_id=msg_id)
+                self._paste_and_send_burst(
+                    has_cc=has_cc, subject=subject, msg_id=msg_id
+                )
             except Exception as exc:  # noqa: BLE001
                 self._close_compose_ui_windows()
                 raise RuntimeError(
@@ -946,7 +962,7 @@ end tell
             time.sleep(0.12)
             if self._compose_window_still_open(subject):
                 try:
-                    self._ui_send(subject=subject)
+                    self._ui_send(subject=subject, msg_id=msg_id)
                     time.sleep(0.15)
                 except Exception:  # noqa: BLE001
                     pass
