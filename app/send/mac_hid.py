@@ -4,8 +4,8 @@ AS (mac.py): New Mail + To/Cc/Subject  →  caret mặc định ở To
 HID (trong KeyboardLock — chặn gõ user / Zalo):
   1) open(msg id) + buộc Outlook frontmost
   2) AX focus ô To, rồi select ô Subject (field editor thật)
-  3) Đúng 1 phím Tab thuần (không Cmd) gửi thẳng Outlook → body
-  4) Cmd+V → Cmd+Return
+  3) Chờ caret ngồi yên trong Subject, rồi đúng 1 Tab thuần → body
+  4) Chờ caret sang body, rồi Cmd+V → Cmd+Return
 
 Không đọc lại focus trước khi dán. Không chuột. Không thử AX Body.
 """
@@ -372,24 +372,19 @@ def _cg_key(keycode: int, *, flags: int = 0) -> None:
 
 
 def _tab_once() -> None:
-    """Đúng một Tab thuần tới Outlook. Tap tắt nên không nuốt; Cmd đã thả nên không thành Cmd+Tab."""
+    """Đúng một Tab. Không thả phím, không set frontmost — tránh đè lên caret đang ở Subject."""
     lock = get_keyboard_lock()
     lock.set_enabled(False)
     try:
-        _clear_outlook_modifiers()
         _run_nsapplescript(
             '''
 tell application "System Events"
-  tell process "Microsoft Outlook"
-    set frontmost to true
-  end tell
-  delay 0.03
   key code 48
 end tell
 '''
         )
-        # Tap vẫn tắt cho tới khi Outlook nhận Tab. Bật lại sớm thì tap nuốt đúng phím này.
-        time.sleep(0.06)
+        # Tap vẫn tắt cho tới khi Outlook nhận Tab.
+        time.sleep(0.08)
     finally:
         lock.set_enabled(True)
 
@@ -411,16 +406,10 @@ _TAIL_FOCUS = """
       try
         set focused of addrField to true
       end try
-      delay 0.04
+      delay 0.06
     end if
     set focused of found to true
-    try
-      perform action "AXPress" of found
-    end try
-    try
-      set value of attribute "AXSelectedTextRange" of found to {1, 500}
-    end try
-    delay 0.05
+    delay 0.22
     return "ok"
 """
 
@@ -559,11 +548,16 @@ def paste_and_send_keyboard(
     msg_id: str = "",
     already_raised: bool = False,
 ) -> None:
-    """To → select Subject → đúng 1 Tab thuần → paste → Cmd+Return."""
+    """Caret vào Subject và Tab cách nhau — không đè. Paste chỉ sau khi Tab đã sang body."""
+    _clear_outlook_modifiers()
     focus_subject_carefully(
         subject_hint=subject_hint, msg_id=msg_id, already_raised=already_raised
     )
+    # Field editor Subject kịp gắn. Không có phím nào trong khoảng này.
+    time.sleep(0.18)
     _tab_once()
+    # Caret kịp rời Subject xuống body rồi mới dán.
+    time.sleep(0.2)
     _cg_cmd_v()
     time.sleep(0.18)
     _cg_cmd_return()
