@@ -1,10 +1,10 @@
 """macOS Outlook Legacy — quy trình chuẩn.
 
-1) Khoá phím 0.5s trước → AS New Mail + To/Cc/Subject (Outlook activate tự nhiên)
+1) Khoá phím 0.5s trước → AS New Mail + To/Cc/Subject (Outlook activate)
 2) AX Subject → Tab 1 → Cmd+V → Cmd+Return
-3) Mở khoá phím → trả focus app trước đó → verify Sent
+3) Mở khoá phím → verify Sent
 
-Không force Space/focus giữa chừng — chỉ khoá phím đến khi gửi xong.
+Không trả focus về Zalo/app khác — user tự quản lý. Chỉ tập trung Outlook + New Mail + paste.
 """
 
 from __future__ import annotations
@@ -270,28 +270,6 @@ def ensure_assistive_access(*, prompt: bool = True) -> bool:
         return bool(lib.AXIsProcessTrusted())
     except Exception:  # noqa: BLE001
         return False
-
-
-def _frontmost_app_name() -> str:
-    try:
-        return _run_osascript_file(
-            'tell application "System Events" to get name of first application process whose frontmost is true',
-            timeout=10,
-        )
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def _activate_app(name: str) -> None:
-    if not name or name.lower() in {"microsoft outlook", "outlook"}:
-        return
-    try:
-        _run_osascript_file(
-            f'tell application "{_esc(name)}" to activate',
-            timeout=10,
-        )
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def _prepare_signature_html(html: str) -> str:
@@ -873,10 +851,12 @@ end tell
         attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
-        Khoá phím → New Mail + To/Cc/Subject (AS activate tự nhiên) → paste → Send → trả app trước.
+        Khoá phím → Outlook New Mail + To/Cc/Subject → paste → Send.
+        Không trả focus về app khác (Zalo…) — để Outlook giữ focus đến hết.
         """
         from ..clipboard_html import set_mac_clipboard_html
         from .mac_hid import raise_compose_window, wait_compose_window
+        from .mac_keylock import keyboard_guard
 
         if not ensure_assistive_access(prompt=True):
             raise RuntimeError(
@@ -896,7 +876,6 @@ end tell
             raise ValueError("Thiếu / sai địa chỉ To — không gửi.")
 
         files = self._normalize_files(attachment)
-        prev_app = _frontmost_app_name()
         att_block = "\n".join(
             f'  make new attachment at msg with properties '
             f'{{file:POSIX file "{_esc(str(p.resolve()))}"}}'
@@ -905,11 +884,7 @@ end tell
         recip_block = _applescript_set_recipients(to_list, cc_list)
         has_cc = bool(cc_list)
 
-        # 0) Đóng compose sót — trước khi khoá phím
-        self._close_compose_ui_windows()
         set_mac_clipboard_html(prepared)
-
-        from .mac_keylock import keyboard_guard
 
         create_script = f'''
 tell application "Microsoft Outlook"
@@ -924,59 +899,57 @@ tell application "Microsoft Outlook"
 end tell
 '''
 
-        # Khoá phím 0.5s → New Mail → paste/Send → mới trả focus (không chen Zalo giữa chừng)
-        try:
-            with keyboard_guard(pre_focus_s=0.5):
+        # Toàn bộ trong khoá phím — không activate app khác, không trả Zalo
+        with keyboard_guard(pre_focus_s=0.5):
+            self._close_compose_ui_windows()
+
+            try:
                 try:
-                    try:
-                        msg_id = _run_nsapplescript(create_script).strip()
-                    except Exception:  # noqa: BLE001
-                        msg_id = _run_osascript_file(create_script, timeout=30).strip()
-                except RuntimeError as exc:
-                    raise RuntimeError(
-                        "Không mở New Mail / gắn To-Cc-Subject.\n"
-                        f"{exc}\n"
-                        "Legacy Outlook = ON · đã login."
-                    ) from exc
+                    msg_id = _run_nsapplescript(create_script).strip()
+                except Exception:  # noqa: BLE001
+                    msg_id = _run_osascript_file(create_script, timeout=30).strip()
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "Không mở New Mail / gắn To-Cc-Subject.\n"
+                    f"{exc}\n"
+                    "Legacy Outlook = ON · đã login."
+                ) from exc
 
-                if not msg_id:
-                    raise RuntimeError("Không lấy được id New Mail.")
+            if not msg_id:
+                raise RuntimeError("Không lấy được id New Mail.")
 
-                if not wait_compose_window(timeout=1.8, subject_hint=subject):
-                    if not raise_compose_window(subject_hint=subject):
-                        self._close_compose_ui_windows()
-                        raise RuntimeError(
-                            "New Mail đã tạo nhưng chưa thấy cửa sổ compose.\n"
-                            "Legacy ON · thử lại."
-                        )
-
-                try:
-                    set_mac_clipboard_html(prepared)
-                    time.sleep(0.02)
-                    self._paste_and_send_burst(has_cc=has_cc, subject=subject)
-                except Exception as exc:  # noqa: BLE001
+            if not wait_compose_window(timeout=1.8, subject_hint=subject):
+                if not raise_compose_window(subject_hint=subject):
                     self._close_compose_ui_windows()
                     raise RuntimeError(
-                        "Paste/gửi lỗi trên New Mail.\n"
-                        "AX Subject → Tab → paste → Send (phím đã khoá trong burst).\n"
-                        f"{exc}"
-                    ) from exc
+                        "New Mail đã tạo nhưng chưa thấy cửa sổ compose.\n"
+                        "Legacy ON · thử lại."
+                    )
 
+            try:
+                set_mac_clipboard_html(prepared)
+                time.sleep(0.02)
+                self._paste_and_send_burst(has_cc=has_cc, subject=subject)
+            except Exception as exc:  # noqa: BLE001
+                self._close_compose_ui_windows()
+                raise RuntimeError(
+                    "Paste/gửi lỗi trên New Mail.\n"
+                    "AX Subject → Tab → paste → Send (phím đã khoá trong burst).\n"
+                    f"{exc}"
+                ) from exc
+
+            try:
+                set_mac_clipboard_html("<div></div>")
+            except Exception:  # noqa: BLE001
+                pass
+
+            time.sleep(0.12)
+            if self._compose_window_still_open(subject):
                 try:
-                    set_mac_clipboard_html("<div></div>")
+                    self._ui_send(subject=subject)
+                    time.sleep(0.15)
                 except Exception:  # noqa: BLE001
                     pass
-
-                time.sleep(0.12)
-                if self._compose_window_still_open(subject):
-                    try:
-                        self._ui_send(subject=subject)
-                        time.sleep(0.15)
-                    except Exception:  # noqa: BLE001
-                        pass
-        finally:
-            # Chỉ trả app trước ĐÓ (Zalo…) sau khi xong / lỗi — không trả giữa New Mail ↔ paste
-            _activate_app(prev_app)
 
         compose_closed = False
         for _ in range(6):
