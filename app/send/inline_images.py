@@ -12,6 +12,8 @@ from __future__ import annotations
 import base64
 import io
 import re
+import shutil
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -40,19 +42,6 @@ class InlinePicture:
 
 
 InlineCidImage = InlinePicture
-
-
-def _inline_store_dir() -> Path:
-    try:
-        from ..paths import user_data_dir
-
-        d = user_data_dir() / "inline_send"
-    except Exception:  # noqa: BLE001
-        import tempfile
-
-        d = Path(tempfile.gettempdir()) / "vt_inline_send"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 def _parse_px(value: str) -> Optional[int]:
@@ -155,13 +144,15 @@ def clear_windows_clipboard() -> None:
         pass
 
 
-def extract_data_images_as_placeholders(html: str) -> tuple[str, list[InlinePicture]]:
+def extract_data_images_as_placeholders(
+    html: str, store: Path
+) -> tuple[str, list[InlinePicture]]:
     """Thay data:image bằng <img src=file:///ABS> + danh sách file."""
     if not html or "data:image/" not in html.lower():
         return html or "", []
 
     items: list[InlinePicture] = []
-    store = _inline_store_dir()
+    store.mkdir(parents=True, exist_ok=True)
 
     def _img_repl(tag_match: re.Match[str]) -> str:
         tag = tag_match.group(0)
@@ -204,13 +195,17 @@ def extract_data_images_as_placeholders(html: str) -> tuple[str, list[InlinePict
     return _IMG_TAG_RE.sub(_img_repl, html), items
 
 
-def replace_data_images_with_cid(html: str) -> tuple[str, list[InlinePicture]]:
-    return extract_data_images_as_placeholders(html)
+def replace_data_images_with_cid(
+    html: str, store: Path
+) -> tuple[str, list[InlinePicture]]:
+    return extract_data_images_as_placeholders(html, store)
 
 
-def write_body_htm_for_insert(html: str, pictures: list[InlinePicture]) -> Path:
+def write_body_htm_for_insert(
+    html: str, pictures: list[InlinePicture], store: Path
+) -> Path:
     """Ghi .htm đầy đủ để Word InsertFile (ảnh đã là file:/// tuyệt đối)."""
-    store = _inline_store_dir()
+    store.mkdir(parents=True, exist_ok=True)
     name = f"vt_body_{uuid.uuid4().hex[:12]}.htm"
     path = store / name
     body = (html or "").strip()
@@ -331,8 +326,19 @@ def insert_body_html_via_word_file(
     if not word_doc:
         return [], None
 
-    ready, pictures = extract_data_images_as_placeholders(body_html)
-    htm_path = write_body_htm_for_insert(ready, pictures)
+    # File chỉ sống trong lúc Word đọc. Không ghi vào thư mục app, Mac không đi qua đây.
+    tmp = Path(tempfile.mkdtemp(prefix="vtmail_"))
+    try:
+        return _insert_body_from_dir(word_doc, body_html, tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _insert_body_from_dir(
+    word_doc: Any, body_html: str, store: Path
+) -> tuple[list[InlinePicture], Optional[Path]]:
+    ready, pictures = extract_data_images_as_placeholders(body_html, store)
+    htm_path = write_body_htm_for_insert(ready, pictures, store)
 
     clear_windows_clipboard()
     abs_htm = str(htm_path.resolve())
@@ -376,22 +382,3 @@ def repair_broken_images_via_word(
 
 def insert_pictures_via_word(word_doc: Any, pictures: list[InlinePicture]) -> int:
     return embed_body_pictures_after_insert(word_doc, pictures)
-
-
-def cleanup_temp_files(items: list[InlinePicture]) -> None:
-    """Xóa HTML và ảnh vừa chèn. Word đã đọc xong trong lần gửi này."""
-    for item in items or []:
-        try:
-            item.path.unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001
-            pass
-    try:
-        store = _inline_store_dir()
-        for pattern in ("vt_*.png", "vt_body_*.htm"):
-            for p in store.glob(pattern):
-                try:
-                    p.unlink(missing_ok=True)
-                except Exception:  # noqa: BLE001
-                    pass
-    except Exception:  # noqa: BLE001
-        pass

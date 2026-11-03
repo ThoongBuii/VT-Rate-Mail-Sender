@@ -20,7 +20,6 @@ from ..models import AppConfig
 from ..outlook_html import prepare_body_html_for_outlook
 from .inline_images import (
     InlinePicture,
-    cleanup_temp_files,
     clear_windows_clipboard,
     insert_body_html_via_word_file,
 )
@@ -281,4 +280,3 @@ class WindowsOutlookSender:
                 time.sleep(0.8)
             except Exception:  # noqa: BLE001
                 pass
-            cleanup_temp_files(pictures)

@@ -62,19 +62,10 @@ def _drop_unused_attachment_copies(keep: list[str]) -> None:
 
 
 def _drop_send_artifacts() -> None:
-    """Xóa log đợt gửi và HTML tạm của những lần mở app trước."""
-    if LOG_DIR.is_dir():
-        for child in LOG_DIR.glob("send_*.json"):
-            try:
-                child.unlink(missing_ok=True)
-            except Exception:  # noqa: BLE001
-                pass
-    inline = ROOT / "inline_send"
-    if not inline.is_dir():
+    """Xóa log đợt gửi của những lần mở app trước."""
+    if not LOG_DIR.is_dir():
         return
-    for child in inline.iterdir():
-        if not child.is_file():
-            continue
+    for child in LOG_DIR.glob("send_*.json"):
         try:
             child.unlink(missing_ok=True)
         except Exception:  # noqa: BLE001

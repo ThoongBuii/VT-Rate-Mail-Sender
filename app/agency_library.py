@@ -65,6 +65,14 @@ def save_library(data: dict[str, Any]) -> None:
         "active_country": str(data.get("active_country") or ""),
         "countries": data.get("countries") or {},
     }
+    countries = payload.get("countries") or {}
+    cleaned: dict[str, list] = {}
+    for name, items in countries.items():
+        key = _norm_country(str(name))
+        if not key:
+            continue
+        cleaned[key] = _dedupe_agencies([*(cleaned.get(key) or []), *(items or [])])
+    payload["countries"] = cleaned
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
@@ -91,13 +99,53 @@ def lib_dict_to_mail(item: dict[str, Any], row_index: int = 0) -> AgencyMail:
 
 
 def country_names(lib: dict[str, Any]) -> list[str]:
-    names = sorted((_norm_country(k) for k in (lib.get("countries") or {}) if _norm_country(k)))
-    return names
+    seen: list[str] = []
+    for key in lib.get("countries") or {}:
+        name = _norm_country(str(key))
+        if name and name not in seen:
+            seen.append(name)
+    return sorted(seen)
+
+
+def _items_for_country(lib: dict[str, Any], country: str) -> list[dict[str, Any]]:
+    key = _norm_country(country)
+    raw: list[Any] = []
+    for name, items in (lib.get("countries") or {}).items():
+        if _norm_country(str(name)) == key:
+            raw.extend(items or [])
+    return _dedupe_agencies(raw)
+
+
+def _agency_identity(item: dict[str, Any]) -> tuple[str, ...]:
+    """Cùng email là một agency. Không có email thì so công ty + tên + cc."""
+    email = re.sub(r"\s+", "", str(item.get("account_mail") or "")).lower()
+    if email:
+        return ("email", email)
+    return (
+        "blank",
+        str(item.get("agency_company") or "").strip().lower(),
+        str(item.get("account_name") or "").strip().lower(),
+        re.sub(r"\s+", "", str(item.get("mail_cc") or "")).lower(),
+    )
+
+
+def _dedupe_agencies(items: list[Any]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, ...]] = set()
+    out: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        key = _agency_identity(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
 
 
 def get_country_mails(lib: dict[str, Any], country: str) -> list[AgencyMail]:
     key = _norm_country(country)
-    raw = (lib.get("countries") or {}).get(key) or []
+    raw = _items_for_country(lib, country)
     mails: list[AgencyMail] = []
     for i, item in enumerate(raw, start=1):
         if not isinstance(item, dict):
@@ -113,7 +161,7 @@ def set_country_mails(lib: dict[str, Any], country: str, mails: list[AgencyMail]
     if not key:
         return lib
     countries = dict(lib.get("countries") or {})
-    countries[key] = [mail_to_lib_dict(m) for m in mails]
+    countries[key] = _dedupe_agencies([mail_to_lib_dict(m) for m in mails])
     lib = dict(lib)
     lib["countries"] = countries
     lib["active_country"] = key
@@ -205,10 +253,7 @@ def _library_from_workbook(wb: Any, *, source_name: str) -> dict[str, Any]:
 def library_summary(lib: dict[str, Any] | None = None) -> dict[str, Any]:
     lib = lib if lib is not None else load_library()
     countries = country_names(lib)
-    counts = {
-        name: len((lib.get("countries") or {}).get(name) or [])
-        for name in countries
-    }
+    counts = {name: len(_items_for_country(lib, name)) for name in countries}
     return {
         "source_name": lib.get("source_name") or "",
         "updated_at": lib.get("updated_at") or 0,
