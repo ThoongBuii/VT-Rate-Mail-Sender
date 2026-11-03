@@ -71,7 +71,7 @@ def save_library(data: dict[str, Any]) -> None:
         key = _norm_country(str(name))
         if not key:
             continue
-        cleaned[key] = _dedupe_agencies([*(cleaned.get(key) or []), *(items or [])])
+        cleaned[key] = _keep_rows([*(cleaned.get(key) or []), *(items or [])])
     payload["countries"] = cleaned
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -113,34 +113,12 @@ def _items_for_country(lib: dict[str, Any], country: str) -> list[dict[str, Any]
     for name, items in (lib.get("countries") or {}).items():
         if _norm_country(str(name)) == key:
             raw.extend(items or [])
-    return _dedupe_agencies(raw)
+    return _keep_rows(raw)
 
 
-def _agency_identity(item: dict[str, Any]) -> tuple[str, ...]:
-    """Cùng email là một agency. Không có email thì so công ty + tên + cc."""
-    email = re.sub(r"\s+", "", str(item.get("account_mail") or "")).lower()
-    if email:
-        return ("email", email)
-    return (
-        "blank",
-        str(item.get("agency_company") or "").strip().lower(),
-        str(item.get("account_name") or "").strip().lower(),
-        re.sub(r"\s+", "", str(item.get("mail_cc") or "")).lower(),
-    )
-
-
-def _dedupe_agencies(items: list[Any]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, ...]] = set()
-    out: list[dict[str, Any]] = []
-    for item in items or []:
-        if not isinstance(item, dict):
-            continue
-        key = _agency_identity(item)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(item)
-    return out
+def _keep_rows(items: list[Any]) -> list[dict[str, Any]]:
+    """Giữ đúng từng dòng Excel, kể cả khi trùng email."""
+    return [item for item in items or [] if isinstance(item, dict)]
 
 
 def get_country_mails(lib: dict[str, Any], country: str) -> list[AgencyMail]:
@@ -161,7 +139,7 @@ def set_country_mails(lib: dict[str, Any], country: str, mails: list[AgencyMail]
     if not key:
         return lib
     countries = dict(lib.get("countries") or {})
-    countries[key] = _dedupe_agencies([mail_to_lib_dict(m) for m in mails])
+    countries[key] = _keep_rows([mail_to_lib_dict(m) for m in mails])
     lib = dict(lib)
     lib["countries"] = countries
     lib["active_country"] = key
@@ -178,9 +156,9 @@ def _sheet_to_mails(headers: list[str], rows: list[list], country: str) -> list[
 
 def import_excel_to_library(path: str | Path, *, source_name: str = "") -> dict[str, Any]:
     """
-    Nạp Excel vào thư viện (ghi đè toàn bộ lần nạp trước):
-    - Sheet không có cột Country → tên sheet là country, và đó là danh sách đủ
-    - Sheet có cột Country (ví dụ CONTACT) chỉ bổ sung country chưa có sheet riêng
+    Nạp Excel vào thư viện (ghi đè toàn bộ lần nạp trước).
+    Chỉ nhận sheet có đủ cột Agency Company, Account Name, Account Mail.
+    Tên sheet là country. Không tạo country từ giá trị trong ô.
     """
     path = Path(path)
     wb = load_workbook(path, data_only=True)
@@ -200,73 +178,36 @@ def _sheet_rows(ws: Any) -> tuple[list[str], list[list], dict[str, int]] | None:
     return headers, data_rows, mapping
 
 
-def _bucket_by_country_column(
-    headers: list[str],
-    data_rows: list[list],
-    mapping: dict[str, int],
-    fallback: str,
-) -> dict[str, list[dict[str, Any]]]:
-    country_idx = mapping["country"]
-    buckets: dict[str, list[list]] = {}
-    for values in data_rows:
-        if all(v is None or str(v).strip() == "" for v in values):
-            continue
-        raw = values[country_idx] if country_idx < len(values) else ""
-        cname = _norm_country(str(raw or fallback or "General"))
-        if not cname:
-            cname = fallback or "General"
-        buckets.setdefault(cname, []).append(values)
-    out: dict[str, list[dict[str, Any]]] = {}
-    for cname, brow in buckets.items():
-        mails = _sheet_to_mails(headers, brow, cname)
-        out.setdefault(cname, []).extend(mail_to_lib_dict(m) for m in mails)
-    return out
+def _is_agency_sheet(mapping: dict[str, int]) -> bool:
+    """Cấu trúc chuẩn: Agency Company + Account Name + Account Mail. Mail cc là cột phụ."""
+    return {"agency_company", "account_name", "account_mail"} <= set(mapping)
 
 
 def _library_from_workbook(wb: Any, *, source_name: str) -> dict[str, Any]:
-    """Sheet trùng tên country thắng. Sheet cột Country không cộng thêm vào sheet đó."""
-    dedicated: dict[str, list[dict[str, Any]]] = {}
-    supplemental: dict[str, list[dict[str, Any]]] = {}
+    """Mỗi sheet đúng cột là một country, lấy đúng tên sheet."""
+    by_country: dict[str, list[dict[str, Any]]] = {}
 
     for ws in wb.worksheets:
         title = _norm_country(ws.title or "")
-        if title.lower() in SKIP_SHEETS:
+        if not title or title.lower() in SKIP_SHEETS:
             continue
         parsed = _sheet_rows(ws)
         if parsed is None:
             continue
         headers, data_rows, mapping = parsed
-        if "account_mail" not in mapping:
+        if not _is_agency_sheet(mapping):
             continue
-
-        if mapping.get("country") is not None:
-            try:
-                grouped = _bucket_by_country_column(headers, data_rows, mapping, title or "General")
-            except ValueError:
-                continue
-            for cname, items in grouped.items():
-                supplemental.setdefault(cname, []).extend(items)
-            continue
-
-        cname = title or "General"
         try:
-            mails = _sheet_to_mails(headers, data_rows, cname)
+            mails = _sheet_to_mails(headers, data_rows, title)
         except ValueError:
             continue
-        # Sheet hợp lệ, kể cả khi chưa có dòng, là danh sách đủ của country này.
-        dedicated.setdefault(cname, []).extend(mail_to_lib_dict(m) for m in mails)
-
-    by_country: dict[str, list[dict[str, Any]]] = {name: list(items) for name, items in dedicated.items()}
-    for cname, items in supplemental.items():
-        if cname in dedicated:
-            continue
-        by_country.setdefault(cname, []).extend(items)
+        by_country.setdefault(title, []).extend(mail_to_lib_dict(m) for m in mails)
 
     if not any(by_country.values()):
         raise ValueError(
             "Không đọc được agency nào.\n"
-            "Excel: mỗi sheet = 1 country, hoặc có cột Country.\n"
-            "Cột bắt buộc: Account Mail (+ Agency Company, Account Name, Mail cc)."
+            "Mỗi sheet cần đúng cột: Agency Company, Account Name, Account Mail, Mail cc.\n"
+            "Tên sheet là country. Sheet khác cấu trúc sẽ được bỏ qua."
         )
 
     names = sorted(by_country.keys())
