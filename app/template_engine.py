@@ -23,15 +23,15 @@ VAR_MAP = {
 
 SUGGESTED_SUBJECT = "VT Rate Quotation – {{agency_company}}"
 
-# HTML gợi ý — Aptos 12pt (Outlook New Mail); chữ ký mặc định Outlook gắn khi gửi
+# HTML gợi ý — Calibri 12pt, dòng 16pt (cùng số Word dùng khi chèn file)
 SUGGESTED_TEMPLATE_HTML = """
-<div style="font-family:Aptos,Calibri,Arial,sans-serif;font-size:12pt;color:#222;line-height:1.35;margin:0;padding:0;">
-  <p style="margin:0;padding:0;line-height:1.35;">Dear {{account_name}},</p>
-  <p style="margin:0;padding:0;line-height:1.35;">Good day!</p>
-  <p style="margin:0;padding:0;line-height:1.35;">Please find our latest VT Rate Quotation for <b>{{agency_company}}</b>.</p>
-  <p style="margin:0;padding:0;line-height:1.35;color:#c0392b;"><b><i>*** Remark: Due to current market changes, Carrier may issue unforeseen notices. Rate &amp; space are subject to availability at the time of booking. ***</i></b></p>
-  <p style="margin:0;padding:0;line-height:1.35;">Thank you for your kind support.</p>
-  <p style="margin:0;padding:0;line-height:1.35;">Best regards,</p>
+<div style="font-family:Calibri,Arial,sans-serif;font-size:12pt;color:#222;line-height:16pt;margin:0;padding:0;">
+  <p style="margin:0;padding:0;line-height:16pt;">Dear {{account_name}},</p>
+  <p style="margin:0;padding:0;line-height:16pt;">Good day!</p>
+  <p style="margin:0;padding:0;line-height:16pt;">Please find our latest VT Rate Quotation for <b>{{agency_company}}</b>.</p>
+  <p style="margin:0;padding:0;line-height:16pt;color:#c0392b;"><b><i>*** Remark: Due to current market changes, Carrier may issue unforeseen notices. Rate &amp; space are subject to availability at the time of booking. ***</i></b></p>
+  <p style="margin:0;padding:0;line-height:16pt;">Thank you for your kind support.</p>
+  <p style="margin:0;padding:0;line-height:16pt;">Best regards,</p>
 </div>
 """.strip()
 
@@ -79,8 +79,8 @@ def text_to_html(text: str) -> str:
     for para in paragraphs:
         lines = "<br>\n".join(para.split("\n"))
         parts.append(
-            f"<p style='margin:0;padding:0;font-family:Aptos,Calibri,Arial,sans-serif;"
-            f"font-size:12pt;color:#222;line-height:1.35;'>{lines}</p>"
+            f"<p style='margin:0;padding:0;font-family:Calibri,Arial,sans-serif;"
+            f"font-size:12pt;color:#222;line-height:16pt;'>{lines}</p>"
         )
     return "<div>" + "".join(parts) + "</div>"
 
@@ -110,7 +110,7 @@ def wrap_preview_document(inner_html: str) -> str:
 <html><head><meta charset="utf-8">
 <style>
   body {{ margin: 12px; background: #fff; color: #222;
-         font-family: Aptos, Calibri, Arial, sans-serif; font-size: 12pt; }}
+         font-family: Calibri, Arial, sans-serif; font-size: 12pt; line-height: 16pt; }}
   table {{ border-collapse: collapse; }}
   img {{ max-width: 100%; height: auto; }}
 </style></head><body>{inner_html}</body></html>"""

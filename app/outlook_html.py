@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-DEFAULT_FONT_STACK = "Aptos, Calibri, Arial, sans-serif"
+DEFAULT_FONT_STACK = "Calibri, Arial, sans-serif"
 DEFAULT_SIZE_PT = "12pt"
 TABLE_CELL_SIZE_PT = "10pt"
 
@@ -190,12 +190,12 @@ def ensure_inline_fonts(html: str, *, in_table: bool = False) -> str:
 
 # Khoảng dòng đồng bộ Soạn ↔ Preview ↔ Outlook Mac (tránh 0.6em + Word spacing chồng)
 _P_SPACING = (
-    "margin:0;padding:0;line-height:1.35;"
+    "margin:0;padding:0;line-height:16pt;"
     "mso-line-height-rule:exactly;"
     "mso-margin-top-alt:0;mso-margin-bottom-alt:0"
 )
 _TABLE_SPACING = "margin:6pt 0;border-collapse:collapse;border-spacing:0"
-_CELL_SPACING = "padding:3pt 4pt;line-height:1.25;vertical-align:middle"
+_CELL_SPACING = "padding:3pt 4pt;line-height:15pt;vertical-align:middle"
 
 
 def collapse_empty_paragraphs(html: str) -> str:
@@ -291,7 +291,8 @@ def wrap_root_body(html: str) -> str:
             style = sm.group(1) if sm else ""
             new_style = _override_style(
                 style,
-                "line-height:1.35;margin:0;padding:0;color:#222;"
+                "font-family:Calibri,Arial,sans-serif;font-size:12pt;"
+                "line-height:16pt;margin:0;padding:0;color:#222;"
                 "mso-line-height-rule:exactly",
             )
             if sm:
@@ -311,7 +312,8 @@ def wrap_root_body(html: str) -> str:
             count=1,
         )
     return (
-        f'<div data-vt-body="1" style="line-height:1.35;margin:0;padding:0;color:#222;'
+        f'<div data-vt-body="1" style="font-family:Calibri,Arial,sans-serif;font-size:12pt;'
+        f'line-height:16pt;margin:0;padding:0;color:#222;'
         f'mso-line-height-rule:exactly;">'
         f"{s}</div>"
     )
@@ -365,11 +367,32 @@ def harden_images_for_outlook(html: str) -> str:
     return re.sub(r"(?is)(<img\b)([^>]*?)(/?>)", _img_repl, html or "")
 
 
+def stabilize_office_fonts(html: str) -> str:
+    """Aptos thiếu trên nhiều máy Windows. Word thay font khác nhau nên cột bảng xê."""
+
+    def _repl(m: re.Match[str]) -> str:
+        out: list[str] = []
+        seen: set[str] = set()
+        for part in m.group(1).split(","):
+            name = part.strip().strip("\"'")
+            if re.fullmatch(r"aptos(\s+display)?", name, flags=re.I):
+                name = "Calibri"
+            key = name.lower()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            out.append(name)
+        return "font-family:" + ",".join(out)
+
+    return re.sub(r"(?i)font-family\s*:\s*([^;\"']+)", _repl, html or "")
+
+
 def prepare_body_html_for_outlook(html: str) -> str:
     """Pipeline trước khi chèn vào New Mail Outlook (đồng bộ desktop/laptop DPI + khoảng dòng)."""
     s = (html or "").strip()
     if not s:
         return s
+    s = stabilize_office_fonts(s)
     s = convert_px_font_sizes_to_pt(s)
     s = convert_px_widths_to_pt(s)
     s = harden_tables_for_outlook(s)

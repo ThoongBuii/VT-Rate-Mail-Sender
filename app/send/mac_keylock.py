@@ -14,8 +14,12 @@ from typing import Optional
 # CGEventSource userData — tap luôn cho qua, kể cả khi allow_synth đã hạ.
 SYNTH_USERDATA = 0x56544D41
 
-# CGEventType khi tap bị hệ thống tắt (CGEventTypes.h).
-_TAP_DISABLED = frozenset({-1, -2, 0xFFFFFFFF, 0xFFFFFFFE})
+# CGEventType khi tap bị tắt (CGEventTypes.h). pyobjc có thể đưa số có dấu hoặc không dấu.
+# Timeout: hệ thống tắt vì callback chậm — chỉ bật lại khi đang trong một mail.
+# User input: chính app gọi CGEventTapEnable(false) lúc gửi xong — không được bật lại.
+_TAP_TIMEOUT = frozenset({-2, 0xFFFFFFFE})
+_TAP_USER_OFF = frozenset({-1, 0xFFFFFFFF})
+_TAP_DISABLED = _TAP_TIMEOUT | _TAP_USER_OFF
 
 
 class KeyboardLock:
@@ -31,6 +35,8 @@ class KeyboardLock:
         self._loop = None
         self._allow_synth = False
         self._synth_depth = 0
+        self._want_enabled = False
+        self._state_lock = threading.Lock()
         self._ready = threading.Event()
         self._failed: Optional[str] = None
 
@@ -47,20 +53,25 @@ class KeyboardLock:
         self._allow_synth = self._synth_depth > 0
 
     def set_enabled(self, on: bool) -> None:
-        """Tắt tap trong lúc bắn đúng một Tab — tap không còn đường nuốt phím đó."""
-        tap = self._tap
-        if tap is None:
-            return
-        try:
-            from Quartz import CGEventTapEnable  # type: ignore
+        """Bật hoặc tắt nuốt phím. Cờ và lệnh enable nằm cùng một khóa với callback."""
+        from Quartz import CGEventTapEnable  # type: ignore
 
-            CGEventTapEnable(tap, bool(on))
-        except Exception:  # noqa: BLE001
-            pass
+        with self._state_lock:
+            self._want_enabled = bool(on)
+            tap = self._tap
+            if tap is None:
+                return
+            try:
+                CGEventTapEnable(tap, bool(on))
+            except Exception:  # noqa: BLE001
+                pass
 
     def start(self) -> bool:
-        if self._tap is not None:
-            return True
+        # Tap cũ còn sống thì dùng lại. Tạo mới mỗi mail sẽ chồng tap và nuốt Tab từ mail ~10.
+        if self._thread is not None and self._thread.is_alive():
+            self.set_enabled(True)
+            return self._failed is None and self._tap is not None
+        self._want_enabled = True
         self._ready.clear()
         self._failed = None
         self._thread = threading.Thread(
@@ -79,11 +90,14 @@ class KeyboardLock:
                 CGEventTapEnable,
             )
 
-            if self._tap is not None:
-                try:
-                    CGEventTapEnable(self._tap, False)
-                except Exception:  # noqa: BLE001
-                    pass
+            with self._state_lock:
+                # Hạ cờ trước. Callback timeout không được bật tap trở lại sau mail.
+                self._want_enabled = False
+                if self._tap is not None:
+                    try:
+                        CGEventTapEnable(self._tap, False)
+                    except Exception:  # noqa: BLE001
+                        pass
             loop = self._loop
             if loop is not None:
                 try:
@@ -93,13 +107,17 @@ class KeyboardLock:
         except Exception:  # noqa: BLE001
             pass
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+            self._thread.join(timeout=2.0)
+        self._synth_depth = 0
+        self._allow_synth = False
+        if self._thread and self._thread.is_alive():
+            # Run loop chưa thoát — tắt tap, giữ nguyên để mail sau không tạo tap mới.
+            self.set_enabled(False)
+            return
         self._tap = None
         self._src = None
         self._loop = None
         self._thread = None
-        self._synth_depth = 0
-        self._allow_synth = False
 
     def _run_loop(self) -> None:
         try:
@@ -145,14 +163,17 @@ class KeyboardLock:
             pass
 
         def _callback(_proxy, etype, event, _refcon):
-            # Tap bị timeout thì hệ thống tắt hẳn — mail sau mất cả khoá lẫn phím app.
             if etype in _TAP_DISABLED:
-                tap = tap_holder.get("tap")
-                if tap is not None:
-                    try:
-                        CGEventTapEnable(tap, True)
-                    except Exception:  # noqa: BLE001
-                        pass
+                # Chỉ cứu tap khi hệ thống tự tắt giữa một mail. Tắt có chủ đích thì để tắt.
+                if etype in _TAP_TIMEOUT:
+                    with lock._state_lock:
+                        if lock._want_enabled:
+                            tap = tap_holder.get("tap")
+                            if tap is not None:
+                                try:
+                                    CGEventTapEnable(tap, True)
+                                except Exception:  # noqa: BLE001
+                                    pass
                 return event
             if get_mark is not None and event is not None:
                 try:
@@ -190,7 +211,9 @@ class KeyboardLock:
         self._loop = CFRunLoopGetCurrent()
         self._src = CFMachPortCreateRunLoopSource(None, tap, 0)
         CFRunLoopAddSource(self._loop, self._src, kCFRunLoopCommonModes)
-        CGEventTapEnable(tap, True)
+        with self._state_lock:
+            if self._want_enabled:
+                CGEventTapEnable(tap, True)
         self._ready.set()
         CFRunLoopRun()
 

@@ -91,7 +91,7 @@ function normalizeHtmlForOutlook(html) {
     if (el.closest("td, th") && el.tagName === "DIV" && el.querySelector("table")) return;
     el.style.margin = "0";
     el.style.padding = "0";
-    el.style.lineHeight = el.closest("td, th") ? "1.25" : "1.35";
+    el.style.lineHeight = el.closest("td, th") ? "15pt" : "16pt";
   });
 
   box.querySelectorAll("table").forEach((t) => {
@@ -109,13 +109,13 @@ function normalizeHtmlForOutlook(html) {
   box.querySelectorAll("td, th").forEach((cell) => {
     if (!cell.style.padding) cell.style.padding = "3pt 4pt";
     cell.style.verticalAlign = cell.style.verticalAlign || "middle";
-    cell.style.lineHeight = cell.style.lineHeight || "1.25";
+    cell.style.lineHeight = "15pt";
   });
 
   // px → pt (96dpi cố định) — đồng bộ desktop 100% vs laptop 125%/150%
   box.querySelectorAll("[style]").forEach((el) => {
     const s = el.getAttribute("style") || "";
-    const next = s
+    const next = stabilizeFontFamily(s)
       .replace(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi, (_, px) => {
         const pt = Math.round((Number(px) * 72) / 96 * 10) / 10;
         return `font-size:${pt}pt`;
@@ -147,7 +147,9 @@ function normalizeHtmlForOutlook(html) {
     root.setAttribute("data-vt-body", "1");
     root.style.margin = "0";
     root.style.padding = "0";
-    root.style.lineHeight = "1.35";
+    root.style.lineHeight = "16pt";
+    if (!root.style.fontFamily) root.style.fontFamily = "Calibri,Arial,sans-serif";
+    if (!root.style.fontSize) root.style.fontSize = "12pt";
     return box.innerHTML;
   }
 
@@ -155,7 +157,7 @@ function normalizeHtmlForOutlook(html) {
   wrap.setAttribute("data-vt-body", "1");
   wrap.setAttribute(
     "style",
-    `line-height:1.35;margin:0;padding:0;color:#222;`
+    "font-family:Calibri,Arial,sans-serif;font-size:12pt;line-height:16pt;margin:0;padding:0;color:#222;"
   );
   while (box.firstChild) wrap.appendChild(box.firstChild);
   return wrap.outerHTML;
@@ -175,17 +177,34 @@ function scheduleSaveCompose() {
   }, 900);
 }
 
+/** Aptos không có trên mọi Windows — Word đổi font và bảng xê cột. Calibri đi cùng Office. */
+function stabilizeFontFamily(style) {
+  return (style || "").replace(/font-family\s*:\s*([^;]+)/gi, (_, raw) => {
+    const out = [];
+    const seen = new Set();
+    raw.split(",").forEach((part) => {
+      let name = part.trim().replace(/^['"]|['"]$/g, "");
+      if (/^aptos(\s+display)?$/i.test(name)) name = "Calibri";
+      const key = name.toLowerCase();
+      if (!name || seen.has(key)) return;
+      seen.add(key);
+      out.push(name);
+    });
+    return `font-family:${out.join(",")}`;
+  });
+}
+
 function frameDoc(html) {
-  // Preview gần Word/Outlook: không max-width:100% (làm bảng/ảnh «nhảy» trên laptop)
+  // Cùng Calibri 12pt / dòng 16pt với file Word chèn vào Outlook.
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
     <style>
       html,body{margin:0;padding:12px;background:#fff;color:#222;overflow:auto}
-      body{font-family:Aptos,Calibri,"Segoe UI",Arial,sans-serif;font-size:12pt;line-height:1.35}
+      body{font-family:Calibri,"Segoe UI",Arial,sans-serif;font-size:12pt;line-height:16pt}
       table{border-collapse:collapse;border-spacing:0;max-width:none;margin:6pt 0}
-      td,th{padding:3pt 4pt;line-height:1.25;vertical-align:middle}
+      td,th{padding:3pt 4pt;line-height:15pt;vertical-align:middle}
       img{height:auto}
-      p,div{margin:0;padding:0;line-height:1.35}
-      td p,th p,td div,th div{margin:0;line-height:1.25}
+      p,div{margin:0;padding:0;line-height:16pt}
+      td p,th p,td div,th div{margin:0;line-height:15pt}
     </style></head><body>${html || ""}</body></html>`;
 }
 

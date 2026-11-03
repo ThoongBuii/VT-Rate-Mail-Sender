@@ -223,9 +223,10 @@ def write_body_htm_for_insert(html: str, pictures: list[InlinePicture]) -> Path:
         "<head><meta charset='utf-8'>\n"
         "<style>\n"
         "<!--\n"
-        "body { margin:0; padding:0; font-size:12pt; }\n"
+        "body { margin:0; padding:0; font-family:Calibri,Arial,sans-serif; font-size:12pt; line-height:16pt; }\n"
         "table { border-collapse:collapse; mso-table-lspace:0pt; mso-table-rspace:0pt; }\n"
-        "td, th { vertical-align:middle; }\n"
+        "td, th { vertical-align:middle; line-height:15pt; }\n"
+        "p, div { margin:0; padding:0; line-height:16pt; }\n"
         "img { border:0; outline:none; text-decoration:none; }\n"
         "-->\n"
         "</style>\n"
@@ -378,20 +379,19 @@ def insert_pictures_via_word(word_doc: Any, pictures: list[InlinePicture]) -> in
 
 
 def cleanup_temp_files(items: list[InlinePicture]) -> None:
+    """Xóa HTML và ảnh vừa chèn. Word đã đọc xong trong lần gửi này."""
+    for item in items or []:
+        try:
+            item.path.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
     try:
         store = _inline_store_dir()
-        now = time.time()
-        for p in store.glob("vt_*.png"):
-            try:
-                if now - p.stat().st_mtime > 2 * 3600:
+        for pattern in ("vt_*.png", "vt_body_*.htm"):
+            for p in store.glob(pattern):
+                try:
                     p.unlink(missing_ok=True)
-            except Exception:  # noqa: BLE001
-                pass
-        for p in store.glob("vt_body_*.htm"):
-            try:
-                if now - p.stat().st_mtime > 2 * 3600:
-                    p.unlink(missing_ok=True)
-            except Exception:  # noqa: BLE001
-                pass
+                except Exception:  # noqa: BLE001
+                    pass
     except Exception:  # noqa: BLE001
         pass

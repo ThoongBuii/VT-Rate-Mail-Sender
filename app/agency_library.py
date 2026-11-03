@@ -137,6 +137,13 @@ def import_excel_to_library(path: str | Path, *, source_name: str = "") -> dict[
     """
     path = Path(path)
     wb = load_workbook(path, data_only=True)
+    try:
+        return _library_from_workbook(wb, source_name=source_name or path.name)
+    finally:
+        wb.close()
+
+
+def _library_from_workbook(wb: Any, *, source_name: str) -> dict[str, Any]:
     by_country: dict[str, list[dict[str, Any]]] = {}
 
     for ws in wb.worksheets:
@@ -186,7 +193,7 @@ def import_excel_to_library(path: str | Path, *, source_name: str = "") -> dict[
     names = sorted(by_country.keys())
     active = names[0]
     lib = {
-        "source_name": source_name or path.name,
+        "source_name": source_name,
         "updated_at": time.time(),
         "active_country": active,
         "countries": by_country,

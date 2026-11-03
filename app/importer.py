@@ -131,12 +131,15 @@ def _rows_to_mails(headers: list[str], data_rows: list[list], start_row: int = 2
 def import_excel(path: str | Path) -> list[AgencyMail]:
     path = Path(path)
     wb = load_workbook(path, data_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
-    if not rows:
-        return []
-    headers = [str(c or "") for c in rows[0]]
-    return _rows_to_mails(headers, [list(r) for r in rows[1:]])
+    try:
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return []
+        headers = [str(c or "") for c in rows[0]]
+        return _rows_to_mails(headers, [list(r) for r in rows[1:]])
+    finally:
+        wb.close()
 
 
 def import_csv(path: str | Path) -> list[AgencyMail]:

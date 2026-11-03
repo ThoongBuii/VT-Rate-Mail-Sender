@@ -107,8 +107,10 @@ class OutlookDesktopSender:
         return [self._resolve_one_path(p) for p in parts]
 
     def preview(self, mail: AgencyMail) -> dict[str, Any]:
+        from ..outlook_html import prepare_body_html_for_outlook
+
         subject = render_subject(mail)
-        body_html = render_body_html(mail, "")
+        body_html = prepare_body_html_for_outlook(render_body_html(mail, ""))
         try:
             paths = self.resolve_attachments(mail)
             att_names = [p.name for p in paths]

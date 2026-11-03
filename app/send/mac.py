@@ -1,7 +1,7 @@
 """macOS Outlook Legacy — quy trình chuẩn.
 
 1) Khoá phím 0.5s → AS New Mail + To/Cc/Subject → msg_id
-2) Claim đúng cửa sổ theo msg_id → caret Subject ngồi yên → Tab → chờ → paste → Send
+2) Claim đúng cửa sổ theo msg_id → AX Subject → Tab → paste → Send
 3) Paste lỗi thì giữ cửa sổ để gửi tay (không đóng, không xếp gửi lại)
 
 Không trả Zalo. Không đóng/verify lan sang cửa sổ New Mail của user.

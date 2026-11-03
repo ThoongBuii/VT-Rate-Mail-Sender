@@ -1,4 +1,5 @@
-/* Layout fluid — co giãn liên tục theo viewport, không khóa tỉ lệ theo từng màn hình */
+/* Một tỉ lệ chữ cho Mac và Windows, desktop và laptop.
+   Không co font theo vw — cửa sổ nhỏ không được làm nút nhỏ hơn nội dung mail. */
 :root {
   --navy: #0f2c4c;
   --blue: #1f6aa5;
@@ -11,31 +12,35 @@
   --warn: #c47a00;
   --ok: #2e7d32;
 
-  /* Khoảng cách / chữ / vùng — scale theo cả chiều ngang & dọc */
-  --space: clamp(0.4rem, 0.55vh + 0.35vw, 0.85rem);
-  --space-x: clamp(0.5rem, 0.9vw, 1.25rem);
-  --gap: clamp(0.35rem, 0.5vw + 0.2vh, 0.75rem);
-  --radius: clamp(6px, 0.5vw, 12px);
-  --font-ui: clamp(0.7rem, 0.22vh + 0.55vw, 0.8125rem);
-  --font-title: clamp(0.95rem, 0.4vh + 0.9vw, 1.25rem);
-  --font-small: clamp(0.65rem, 0.15vh + 0.5vw, 0.75rem);
-  --sidebar: clamp(9.5rem, 18vw + 2rem, 18.75rem);
-  --log-h: clamp(4.5rem, 14vh, 12.5rem);
-  --meta-max: clamp(3.5rem, 12vh, 7.5rem);
-  --logo-h: clamp(1.75rem, 3.8vh + 0.4vw, 2.5rem);
-  --btn-pad-y: clamp(0.4rem, 0.55vh + 0.2vw, 0.6rem);
-  --btn-pad-x: clamp(0.55rem, 0.7vw, 0.9rem);
-  --ctrl-h: clamp(1.6rem, 2.2vh + 0.4vw, 2.35rem);
+  --space: 10px;
+  --space-x: 14px;
+  --gap: 8px;
+  --radius: 8px;
+  --font-ui: 14px;
+  --font-title: 18px;
+  --font-small: 13px;
+  --sidebar: clamp(220px, 20vw, 280px);
+  --log-h: clamp(120px, 16vh, 176px);
+  --meta-max: 120px;
+  --logo-h: 36px;
+  --btn-pad-y: 7px;
+  --btn-pad-x: 12px;
+  --ctrl-h: 34px;
 }
 
 * { box-sizing: border-box; }
 
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 html, body {
   margin: 0;
   height: 100%;
   width: 100%;
   overflow: hidden;
-  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  font-family: "Segoe UI", Calibri, "Helvetica Neue", Arial, sans-serif;
   font-size: var(--font-ui);
   color: var(--text);
   background: var(--bg);
@@ -90,7 +95,7 @@ body {
 }
 .brand-sub {
   margin: 0.1rem 0 0;
-  font-size: clamp(0px, 0.35vw + 0.35vh, 0.75rem);
+  font-size: 12px;
   line-height: 1.2;
   color: #b7c9dc;
   white-space: nowrap;
@@ -236,7 +241,7 @@ body {
 }
 .list-panel h2 {
   margin: 0;
-  font-size: clamp(0.8rem, 0.3vh + 0.7vw, 0.95rem);
+  font-size: 15px;
 }
 .list-hint {
   margin: 0 0 0.45rem;
@@ -342,7 +347,7 @@ body {
   padding: 0.5rem 0.6rem;
   border: 1px solid var(--line);
   border-radius: calc(var(--radius) * 0.7);
-  font-size: clamp(0.8rem, 0.3vh + 0.7vw, 0.9rem);
+  font-size: var(--font-ui);
   height: var(--ctrl-h);
 }
 .attach-block { display: grid; gap: 0.35rem; }
@@ -430,7 +435,7 @@ body {
   gap: 0.25rem;
 }
 .fmt-select {
-  height: clamp(1.5rem, 2vh + 0.3vw, 1.75rem);
+  height: 30px;
   border: 1px solid #c5cdd8;
   border-radius: 4px;
   background: #fff;
@@ -441,8 +446,8 @@ body {
 .fmt-font { min-width: clamp(6rem, 12vw, 11rem); max-width: 12rem; }
 .fmt-size { width: 3.4rem; }
 .fmt-btn {
-  min-width: 1.65rem;
-  height: clamp(1.5rem, 2vh + 0.3vw, 1.75rem);
+  min-width: 28px;
+  height: 30px;
   padding: 0 0.4rem;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -470,7 +475,7 @@ body {
 .fmt-color {
   position: relative;
   width: 1.65rem;
-  height: clamp(1.5rem, 2vh + 0.3vw, 1.75rem);
+  height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -511,9 +516,9 @@ body {
   border-radius: 0 0 calc(var(--radius) * 0.7) calc(var(--radius) * 0.7);
   background: #fff;
   padding: clamp(0.55rem, 1vh, 0.85rem) clamp(0.65rem, 1vw, 0.9rem);
-  font-family: Aptos, Calibri, "Segoe UI", Arial, sans-serif;
+  font-family: Calibri, "Segoe UI", Arial, sans-serif;
   font-size: 12pt;
-  line-height: 1.35;
+  line-height: 16pt;
   color: #222;
   outline: none;
 }
@@ -535,7 +540,7 @@ body {
 .compose-editor td,
 .compose-editor th {
   padding: 3pt 4pt;
-  line-height: 1.25;
+  line-height: 15pt;
   vertical-align: middle;
 }
 .compose-editor img { height: auto; }
@@ -544,7 +549,7 @@ body {
 .compose-editor div {
   margin: 0;
   padding: 0;
-  line-height: 1.35;
+  line-height: 16pt;
 }
 .compose-editor td p,
 .compose-editor th p,
@@ -552,7 +557,7 @@ body {
 .compose-editor th div {
   margin: 0;
   padding: 0;
-  line-height: 1.25;
+  line-height: 15pt;
 }
 .drop-zone.drag-over {
   outline: 2px dashed var(--blue);
@@ -669,7 +674,7 @@ body {
   color: #d7e3ef;
   border-radius: calc(var(--radius) * 0.7);
   padding: clamp(0.35rem, 0.7vh, 0.55rem) clamp(0.45rem, 0.8vw, 0.65rem);
-  font-size: clamp(0.6rem, 0.2vh + 0.45vw, 0.7rem);
+  font-size: 12.5px;
   font-family: ui-monospace, Menlo, Consolas, monospace;
 }
 
@@ -719,7 +724,7 @@ body {
 }
 .agency-form h3 {
   margin: 0 0 0.2rem;
-  font-size: clamp(0.95rem, 1.2vw, 1.05rem);
+  font-size: var(--font-title);
   color: var(--navy);
 }
 .agency-form label {
@@ -732,7 +737,7 @@ body {
   padding: 0.5rem 0.6rem;
   border: 1px solid var(--line);
   border-radius: calc(var(--radius) * 0.7);
-  font-size: clamp(0.8rem, 0.8vw, 0.9rem);
+  font-size: var(--font-ui);
 }
 .dialog-actions {
   display: flex;
@@ -774,7 +779,7 @@ body {
   padding: 0.45rem 0.55rem;
   border: 1px solid #c5d0dc;
   border-radius: 6px;
-  font-size: clamp(0.8rem, 0.8vw, 0.9rem);
+  font-size: var(--font-ui);
 }
 .sig-paste {
   min-height: clamp(7rem, 22vh, 12rem);

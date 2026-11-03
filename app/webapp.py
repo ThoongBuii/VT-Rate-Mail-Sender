@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -39,6 +41,46 @@ flask_app = Flask(
 )
 
 
+def _drop_unused_attachment_copies(keep: list[str]) -> None:
+    """Chỉ giữ file đang được chọn. Bản Excel cũ và file đã bỏ không nằm lại."""
+    keep_resolved: set[str] = set()
+    for raw in keep:
+        try:
+            keep_resolved.add(str(Path(raw).resolve()))
+        except Exception:  # noqa: BLE001
+            pass
+    if not UPLOAD_DIR.is_dir():
+        return
+    for child in UPLOAD_DIR.iterdir():
+        if not child.is_file():
+            continue
+        try:
+            if str(child.resolve()) not in keep_resolved:
+                child.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _drop_send_artifacts() -> None:
+    """Xóa log đợt gửi và HTML tạm của những lần mở app trước."""
+    if LOG_DIR.is_dir():
+        for child in LOG_DIR.glob("send_*.json"):
+            try:
+                child.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+    inline = ROOT / "inline_send"
+    if not inline.is_dir():
+        return
+    for child in inline.iterdir():
+        if not child.is_file():
+            continue
+        try:
+            child.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 class AppState:
     def __init__(self) -> None:
         self.config = self._load_config()
@@ -55,6 +97,8 @@ class AppState:
         self.subject: str = self.config.default_subject or SUGGESTED_SUBJECT
         self.attachment: str = self.config.default_attachment or ""
         self.template_html: str = self._load_template_html()
+        _drop_unused_attachment_copies(split_attachments(self.attachment))
+        _drop_send_artifacts()
         self.selected_index: int = 0
         self._boot_library()
         self.progress: dict[str, Any] = {
@@ -167,8 +211,6 @@ class AppState:
                 )
             else:
                 message = f"Xong · OK {progress.sent} · lỗi {progress.failed}"
-                if progress.logs:
-                    self._persist_logs(progress)
 
             self.progress = {
                 "total": progress.total,
@@ -193,24 +235,6 @@ class AppState:
                     for e in progress.logs[-200:]
                 ],
             }
-
-    def _persist_logs(self, progress: SendProgress) -> None:
-        LOG_DIR.mkdir(exist_ok=True)
-        from datetime import datetime
-
-        path = LOG_DIR / f"send_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        data = [
-            {
-                "time": e.display_time(),
-                "agency": e.agency_company,
-                "mail": e.account_mail,
-                "subject": e.subject,
-                "status": e.status,
-                "message": e.message,
-            }
-            for e in progress.logs
-        ]
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def snapshot(self) -> dict[str, Any]:
         import platform
@@ -546,13 +570,14 @@ def api_import():
     f = request.files.get("file")
     if not f:
         return jsonify({"ok": False, "error": "Thiếu file Excel"}), 400
-    UPLOAD_DIR.mkdir(exist_ok=True)
     suffix = Path(f.filename or "list.xlsx").suffix.lower() or ".xlsx"
     if suffix not in {".xlsx", ".xlsm", ".csv"}:
         return jsonify({"ok": False, "error": "Chỉ hỗ trợ .xlsx / .csv"}), 400
-    path = UPLOAD_DIR / f"library_{uuid.uuid4().hex}{suffix}"
-    f.save(path)
+    fd, raw_name = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    path = Path(raw_name)
     try:
+        f.save(path)
         if suffix == ".csv":
             # CSV → 1 country General
             mails = import_agencies(path)
@@ -579,6 +604,8 @@ def api_import():
         )
     except Exception as exc:  # noqa: BLE001
         return jsonify({"ok": False, "error": str(exc)}), 400
+    finally:
+        path.unlink(missing_ok=True)
 
 
 @flask_app.get("/api/library")
@@ -764,6 +791,7 @@ def api_attachment():
     STATE.attachment = join_attachments(current)
     STATE.apply_compose_to_mails()
     STATE.save_config()
+    _drop_unused_attachment_copies(current)
     return jsonify(
         {
             "ok": True,
@@ -788,6 +816,7 @@ def api_attachment_clear():
     STATE.apply_compose_to_mails()
     STATE.save_config()
     paths = split_attachments(STATE.attachment)
+    _drop_unused_attachment_copies(paths)
     return jsonify(
         {
             "ok": True,
