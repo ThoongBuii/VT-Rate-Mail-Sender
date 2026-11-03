@@ -178,10 +178,9 @@ def _sheet_to_mails(headers: list[str], rows: list[list], country: str) -> list[
 
 def import_excel_to_library(path: str | Path, *, source_name: str = "") -> dict[str, Any]:
     """
-    Nạp Excel vào thư viện:
-    - Nhiều sheet → mỗi sheet = 1 country (trừ sheet hướng dẫn)
-    - 1 sheet có cột Country → nhóm theo cột
-    - 1 sheet không có Country → country = tên sheet / 'General'
+    Nạp Excel vào thư viện (ghi đè toàn bộ lần nạp trước):
+    - Sheet không có cột Country → tên sheet là country, và đó là danh sách đủ
+    - Sheet có cột Country (ví dụ CONTACT) chỉ bổ sung country chưa có sheet riêng
     """
     path = Path(path)
     wb = load_workbook(path, data_only=True)
@@ -191,47 +190,79 @@ def import_excel_to_library(path: str | Path, *, source_name: str = "") -> dict[
         wb.close()
 
 
+def _sheet_rows(ws: Any) -> tuple[list[str], list[list], dict[str, int]] | None:
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return None
+    headers = [str(c or "") for c in rows[0]]
+    mapping = _map_headers(headers)
+    data_rows = [list(r) for r in rows[1:]]
+    return headers, data_rows, mapping
+
+
+def _bucket_by_country_column(
+    headers: list[str],
+    data_rows: list[list],
+    mapping: dict[str, int],
+    fallback: str,
+) -> dict[str, list[dict[str, Any]]]:
+    country_idx = mapping["country"]
+    buckets: dict[str, list[list]] = {}
+    for values in data_rows:
+        if all(v is None or str(v).strip() == "" for v in values):
+            continue
+        raw = values[country_idx] if country_idx < len(values) else ""
+        cname = _norm_country(str(raw or fallback or "General"))
+        if not cname:
+            cname = fallback or "General"
+        buckets.setdefault(cname, []).append(values)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for cname, brow in buckets.items():
+        mails = _sheet_to_mails(headers, brow, cname)
+        out.setdefault(cname, []).extend(mail_to_lib_dict(m) for m in mails)
+    return out
+
+
 def _library_from_workbook(wb: Any, *, source_name: str) -> dict[str, Any]:
-    by_country: dict[str, list[dict[str, Any]]] = {}
+    """Sheet trùng tên country thắng. Sheet cột Country không cộng thêm vào sheet đó."""
+    dedicated: dict[str, list[dict[str, Any]]] = {}
+    supplemental: dict[str, list[dict[str, Any]]] = {}
 
     for ws in wb.worksheets:
         title = _norm_country(ws.title or "")
         if title.lower() in SKIP_SHEETS:
             continue
-        rows = list(ws.iter_rows(values_only=True))
-        if not rows:
+        parsed = _sheet_rows(ws)
+        if parsed is None:
             continue
-        headers = [str(c or "") for c in rows[0]]
-        mapping = _map_headers(headers)
-        data_rows = [list(r) for r in rows[1:]]
-
-        # Có cột Country → nhóm theo giá trị
-        country_idx = mapping.get("country")
-        if country_idx is not None:
-            buckets: dict[str, list[list]] = {}
-            for values in data_rows:
-                if all(v is None or str(v).strip() == "" for v in values):
-                    continue
-                cname = _norm_country(str(values[country_idx] if country_idx < len(values) else "") or title or "General")
-                if not cname:
-                    cname = title or "General"
-                buckets.setdefault(cname, []).append(values)
-            for cname, brow in buckets.items():
-                mails = _sheet_to_mails(headers, brow, cname)
-                by_country.setdefault(cname, [])
-                by_country[cname].extend(mail_to_lib_dict(m) for m in mails)
+        headers, data_rows, mapping = parsed
+        if "account_mail" not in mapping:
             continue
 
-        # Không có cột Country → dùng tên sheet
+        if mapping.get("country") is not None:
+            try:
+                grouped = _bucket_by_country_column(headers, data_rows, mapping, title or "General")
+            except ValueError:
+                continue
+            for cname, items in grouped.items():
+                supplemental.setdefault(cname, []).extend(items)
+            continue
+
         cname = title or "General"
         try:
             mails = _sheet_to_mails(headers, data_rows, cname)
         except ValueError:
             continue
-        by_country.setdefault(cname, [])
-        by_country[cname].extend(mail_to_lib_dict(m) for m in mails)
+        # Sheet hợp lệ, kể cả khi chưa có dòng, là danh sách đủ của country này.
+        dedicated.setdefault(cname, []).extend(mail_to_lib_dict(m) for m in mails)
 
-    if not by_country:
+    by_country: dict[str, list[dict[str, Any]]] = {name: list(items) for name, items in dedicated.items()}
+    for cname, items in supplemental.items():
+        if cname in dedicated:
+            continue
+        by_country.setdefault(cname, []).extend(items)
+
+    if not any(by_country.values()):
         raise ValueError(
             "Không đọc được agency nào.\n"
             "Excel: mỗi sheet = 1 country, hoặc có cột Country.\n"
