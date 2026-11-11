@@ -4,10 +4,11 @@ AS (mac.py): New Mail + To/Cc/Subject  →  caret mặc định ở To
 HID (trong KeyboardLock — chặn gõ user / Zalo):
   1) open(msg id) + buộc Outlook frontmost
   2) AX set focused ô Subject
-  3) Tab 1 lần → body → clipboard (WebArchive) → Cmd+V thật → gửi khi nội dung đã vào thư
+  3) Copy nội dung thư bằng WebKit (như Cmd+C) → Tab 1 lần → body → Cmd+V thật
+     → gửi khi nội dung đã vào thư
 
-Cmd+V bắn bằng CGEventPostToPid không kích hoạt Paste của WebView.
-Keystroke System Events đi qua session tap nên bị nuốt. Tắt tap trong lúc bấm.
+Ghi HTML tay lên clipboard thiếu RTF / WebKit pasteboard, ô soạn bỏ qua.
+Cmd+V bắn bằng CGEventPostToPid không kích hoạt Paste. Tắt tap trong lúc bấm.
 
 Tab/Cmd gửi vào đúng PID Outlook đang sống. Outlook tắt rồi mở lại thì lấy PID mới.
 Chưa rời Subject thì không dán và không gửi. Không chuột. Không thử AX Body.
@@ -407,12 +408,87 @@ def _hid_cmd_v() -> None:
     CGEventPost(kCGHIDEventTap, up)
 
 
-def _write_clipboard(html: str) -> None:
-    """Ghi HTML lên clipboard ở main thread — Outlook chỉ đọc pasteboard ở đó."""
-    from ..clipboard_html import set_mac_clipboard_html
+def _compact(text: str | None) -> str:
+    return "".join((text or "").split()).lower()
 
+
+def _copy_rendered_message(html: str) -> None:
+    """Copy đúng thao tác: mở nội dung thư trong WebKit, chọn hết, Cmd+C.
+
+    Phải chạy trên main thread. Cửa sổ trong suốt, ngoài màn hình, không chiếm Outlook.
+    """
+    from AppKit import (  # type: ignore
+        NSBackingStoreBuffered,
+        NSMakeRect,
+        NSPasteboard,
+        NSWindow,
+    )
+    from Foundation import NSDate, NSRunLoop  # type: ignore
+    from WebKit import WKWebView, WKWebViewConfiguration  # type: ignore
+
+    from .html_merge import html_visible_text
+
+    fragment = (html or "").strip()
+    if not fragment:
+        raise RuntimeError(
+            "Không copy được nội dung thư trên app.\n"
+            "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
+        )
+    if "<html" not in fragment.lower():
+        page = "<!DOCTYPE html><html><body>" + fragment + "</body></html>"
+    else:
+        page = fragment
+
+    web = WKWebView.alloc().initWithFrame_configuration_(
+        NSMakeRect(0, 0, 960, 1200),
+        WKWebViewConfiguration.alloc().init(),
+    )
+    win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        NSMakeRect(-3200, -3200, 960, 1200),
+        0,
+        NSBackingStoreBuffered,
+        False,
+    )
+    win.setReleasedWhenClosed_(False)
+    win.setAlphaValue_(0)
+    win.setIgnoresMouseEvents_(True)
+    try:
+        win.contentView().addSubview_(web)
+        web.loadHTMLString_baseURL_(page, None)
+        deadline = time.time() + 3
+        while web.isLoading() and time.time() < deadline:
+            NSRunLoop.currentRunLoop().runUntilDate_(
+                NSDate.dateWithTimeIntervalSinceNow_(0.05)
+            )
+        win.orderFrontRegardless()
+        win.makeFirstResponder_(web)
+        NSRunLoop.currentRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.08))
+        web.selectAll_(None)
+        web.copy_(None)
+        NSRunLoop.currentRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.08))
+    finally:
+        try:
+            win.orderOut_(None)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            web.removeFromSuperview()
+        except Exception:  # noqa: BLE001
+            pass
+
+    plain = NSPasteboard.generalPasteboard().stringForType_("public.utf8-plain-text") or ""
+    mark = _compact(html_visible_text(html))[:32]
+    if len(mark) < 8 or mark not in _compact(plain):
+        raise RuntimeError(
+            "Không copy được nội dung thư trên app.\n"
+            "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
+        )
+
+
+def _write_clipboard(html: str) -> None:
+    """Copy nội dung thư trên main thread. Outlook chỉ nhận pasteboard do WebKit tạo."""
     if threading.current_thread() is threading.main_thread():
-        set_mac_clipboard_html(html)
+        _copy_rendered_message(html)
         return
     from Foundation import NSOperationQueue  # type: ignore
 
@@ -421,15 +497,18 @@ def _write_clipboard(html: str) -> None:
 
     def _block() -> None:
         try:
-            set_mac_clipboard_html(html)
+            _copy_rendered_message(html)
         except Exception as exc:  # noqa: BLE001
             box["err"] = exc
         finally:
             done.set()
 
     NSOperationQueue.mainQueue().addOperationWithBlock_(_block)
-    if not done.wait(timeout=3):
-        raise RuntimeError("Không ghi được nội dung mail lên clipboard.")
+    if not done.wait(timeout=6):
+        raise RuntimeError(
+            "Không copy được nội dung thư trên app.\n"
+            "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
+        )
     if box["err"] is not None:
         raise box["err"]
 
@@ -746,7 +825,7 @@ def paste_and_send_keyboard(
     _paste_keystroke()
     landed = _wait_landed(msg_id, marker, before)
     if landed == "no":
-        _write_clipboard(html)
+        # Clipboard vẫn là bản WebKit vừa copy. Copy lại sẽ kéo focus khỏi Outlook.
         _paste_menu()
         time.sleep(0.4)
         landed = _body_landed(msg_id, marker, before)

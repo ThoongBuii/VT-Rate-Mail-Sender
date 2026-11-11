@@ -57,6 +57,7 @@ elif sys.platform == "darwin":
         "Foundation",
         "objc",
         "Quartz",
+        "WebKit",
     ]
 
 a = Analysis(
