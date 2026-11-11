@@ -510,10 +510,9 @@ end tell
         attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
-        Theo đúng msg_id: tạo → claim → paste/Send → đóng id đó.
-        Không Cmd+W lan sang New Mail khác; không verify Sent.
+        Theo đúng msg_id: tạo → claim → paste vào body → gửi khi nội dung đã vào thư.
+        Không Cmd+W lan sang New Mail khác.
         """
-        from ..clipboard_html import set_mac_clipboard_html
         from .mac_hid import (
             claim_outlook_compose,
             close_compose_by_id,
@@ -589,11 +588,11 @@ end tell
                 )
 
             try:
-                set_mac_clipboard_html(prepared)
                 paste_and_send_keyboard(
                     subject_hint=subject,
                     msg_id=msg_id,
                     already_raised=True,
+                    html=prepared,
                 )
             except Exception as exc:  # noqa: BLE001
                 # Giữ cửa sổ để user gửi/sửa tay. Không đóng, không xếp gửi lại.

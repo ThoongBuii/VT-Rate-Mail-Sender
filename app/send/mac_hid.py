@@ -4,7 +4,7 @@ AS (mac.py): New Mail + To/Cc/Subject  →  caret mặc định ở To
 HID (trong KeyboardLock — chặn gõ user / Zalo):
   1) open(msg id) + buộc Outlook frontmost
   2) AX set focused ô Subject
-  3) Tab 1 lần → body → Cmd+V → Cmd+Return
+  3) Tab 1 lần → body → clipboard → Paste → gửi khi nội dung đã vào thư
 
 Tab/Cmd gửi vào đúng PID Outlook đang sống. Outlook tắt rồi mở lại thì lấy PID mới.
 Chưa rời Subject thì không dán và không gửi. Không chuột. Không thử AX Body.
@@ -13,6 +13,7 @@ Chưa rời Subject thì không dán và không gửi. Không chuột. Không th
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 
 from .mac_keylock import SYNTH_USERDATA, get_keyboard_lock
@@ -373,6 +374,91 @@ def _cg_cmd_v() -> None:
     _cg_key(9, flags=kCGEventFlagMaskCommand)
 
 
+def _write_clipboard(html: str) -> None:
+    """Ghi HTML lên clipboard ở main thread — Outlook chỉ đọc pasteboard ở đó."""
+    from ..clipboard_html import set_mac_clipboard_html
+
+    if threading.current_thread() is threading.main_thread():
+        set_mac_clipboard_html(html)
+        return
+    from Foundation import NSOperationQueue  # type: ignore
+
+    box: dict = {"err": None}
+    done = threading.Event()
+
+    def _block() -> None:
+        try:
+            set_mac_clipboard_html(html)
+        except Exception as exc:  # noqa: BLE001
+            box["err"] = exc
+        finally:
+            done.set()
+
+    NSOperationQueue.mainQueue().addOperationWithBlock_(_block)
+    if not done.wait(timeout=3):
+        raise RuntimeError("Không ghi được nội dung mail lên clipboard.")
+    if box["err"] is not None:
+        raise box["err"]
+
+
+def _paste_keystroke() -> None:
+    """Paste thật vào ô đang focus. Khoá phím đang bật nên phải mở lối cho phím này."""
+    lock = get_keyboard_lock()
+    lock.allow_synth(True)
+    try:
+        _run_nsapplescript(
+            'tell application "System Events" to tell process "Microsoft Outlook" '
+            'to keystroke "v" using command down'
+        )
+        time.sleep(0.06)
+    except Exception:  # noqa: BLE001
+        _cg_cmd_v()
+    finally:
+        lock.allow_synth(False)
+
+
+def _body_marker(html: str) -> str:
+    from .html_merge import html_visible_text
+
+    return " ".join(html_visible_text(html).split())[:48]
+
+
+def _outgoing_plain(msg_id: str) -> str | None:
+    """Plain text của New Mail. None = không đọc được."""
+    mid = (msg_id or "").strip()
+    if not mid.isdigit():
+        return None
+    script = f'''
+tell application "Microsoft Outlook"
+  try
+    return content of outgoing message id {mid}
+  on error
+    return ""
+  end try
+end tell
+'''
+    try:
+        return _run_nsapplescript(script) or ""
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _body_landed(msg_id: str, marker: str) -> str:
+    """yes = thấy nội dung. no = thư trống hoặc không có đoạn đã soạn. unknown = không đọc được."""
+    mark = " ".join((marker or "").split()).lower()
+    if len(mark) < 8:
+        return "unknown"
+    plain = _outgoing_plain(msg_id)
+    if plain is None:
+        return "unknown"
+    got = " ".join(plain.split()).lower()
+    if not got:
+        return "no"
+    if mark[:24] in got:
+        return "yes"
+    return "no"
+
+
 def _cg_cmd_return() -> None:
     from Quartz import kCGEventFlagMaskCommand  # type: ignore
 
@@ -545,8 +631,9 @@ def paste_and_send_keyboard(
     subject_hint: str = "",
     msg_id: str = "",
     already_raised: bool = False,
+    html: str = "",
 ) -> None:
-    """AX Subject → Tab 1 → chỉ dán và gửi khi đã rời Subject."""
+    """Subject → Tab 1 → ghi clipboard → Paste vào body → gửi khi nội dung đã vào thư."""
     if _outlook_pid() <= 0:
         raise RuntimeError(
             "Outlook không đang chạy cùng app.\n"
@@ -566,8 +653,23 @@ def paste_and_send_keyboard(
             "Chưa rời ô Subject nên không dán nội dung.\n"
             "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
         )
-    _cg_cmd_v()
-    time.sleep(0.22)
+
+    marker = _body_marker(html)
+    _write_clipboard(html)
+    _paste_keystroke()
+    time.sleep(0.28)
+    landed = _body_landed(msg_id, marker)
+    if landed == "no":
+        # Body vừa nhận focus có thể nuốt lần dán đầu. Ghi lại clipboard và dán lần hai.
+        _write_clipboard(html)
+        _cg_cmd_v()
+        time.sleep(0.35)
+        landed = _body_landed(msg_id, marker)
+    if landed == "no":
+        raise RuntimeError(
+            "Đã ở body nhưng nội dung soạn chưa vào thư.\n"
+            "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
+        )
     _cg_cmd_return()
     time.sleep(0.05)
     _release_modifiers_quiet()
