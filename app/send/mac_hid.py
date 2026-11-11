@@ -4,7 +4,10 @@ AS (mac.py): New Mail + To/Cc/Subject  →  caret mặc định ở To
 HID (trong KeyboardLock — chặn gõ user / Zalo):
   1) open(msg id) + buộc Outlook frontmost
   2) AX set focused ô Subject
-  3) Tab 1 lần → body → clipboard → Paste → gửi khi nội dung đã vào thư
+  3) Tab 1 lần → body → clipboard (WebArchive) → Cmd+V thật → gửi khi nội dung đã vào thư
+
+Cmd+V bắn bằng CGEventPostToPid không kích hoạt Paste của WebView.
+Keystroke System Events đi qua session tap nên bị nuốt. Tắt tap trong lúc bấm.
 
 Tab/Cmd gửi vào đúng PID Outlook đang sống. Outlook tắt rồi mở lại thì lấy PID mới.
 Chưa rời Subject thì không dán và không gửi. Không chuột. Không thử AX Body.
@@ -368,10 +371,40 @@ def _cg_tab() -> None:
     _cg_key(48)
 
 
-def _cg_cmd_v() -> None:
-    from Quartz import kCGEventFlagMaskCommand  # type: ignore
+def _outlook_is_frontmost() -> bool:
+    try:
+        from AppKit import NSWorkspace  # type: ignore
 
-    _cg_key(9, flags=kCGEventFlagMaskCommand)
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        return app is not None and _is_outlook_app(app)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _hid_cmd_v() -> None:
+    """Cmd+V mức HID. Chỉ khi Outlook đang là app trước mặt."""
+    from Quartz import (  # type: ignore
+        CGEventCreateKeyboardEvent,
+        CGEventPost,
+        CGEventSetFlags,
+        kCGEventFlagMaskCommand,
+        kCGHIDEventTap,
+    )
+
+    if not _outlook_is_frontmost():
+        return
+    src = _synth_source()
+    down = CGEventCreateKeyboardEvent(src, 9, True)
+    up = CGEventCreateKeyboardEvent(src, 9, False)
+    if down is None or up is None:
+        return
+    _mark_synth(down)
+    _mark_synth(up)
+    CGEventSetFlags(down, kCGEventFlagMaskCommand)
+    CGEventSetFlags(up, kCGEventFlagMaskCommand)
+    CGEventPost(kCGHIDEventTap, down)
+    time.sleep(0.012)
+    CGEventPost(kCGHIDEventTap, up)
 
 
 def _write_clipboard(html: str) -> None:
@@ -402,19 +435,53 @@ def _write_clipboard(html: str) -> None:
 
 
 def _paste_keystroke() -> None:
-    """Paste thật vào ô đang focus. Khoá phím đang bật nên phải mở lối cho phím này."""
+    """Cmd+V thật vào ô đang focus.
+
+    Tắt tap trong lúc bấm. WebView không coi Cmd+V từ CGEventPostToPid là Paste,
+    còn keystroke System Events chạy qua session tap và bị nuốt.
+    """
     lock = get_keyboard_lock()
-    lock.allow_synth(True)
+    lock.set_enabled(False)
     try:
+        if not _outlook_is_frontmost():
+            return
         _run_nsapplescript(
-            'tell application "System Events" to tell process "Microsoft Outlook" '
-            'to keystroke "v" using command down'
+            'tell application "System Events" to key code 9 using command down'
         )
-        time.sleep(0.06)
+        time.sleep(0.1)
     except Exception:  # noqa: BLE001
-        _cg_cmd_v()
+        _hid_cmd_v()
     finally:
-        lock.allow_synth(False)
+        lock.set_enabled(True)
+
+
+def _paste_menu() -> bool:
+    """Edit → Paste. Lệnh menu, không đi qua tap phím."""
+    script = '''
+tell application "System Events"
+  tell process "Microsoft Outlook"
+    repeat with en in {"Edit", "Sửa", "Chỉnh sửa"}
+      try
+        set m to menu en of menu bar item en of menu bar 1
+        repeat with pn in {"Paste", "Dán"}
+          try
+            set mi to menu item pn of m
+            if enabled of mi is true then
+              click mi
+              return "yes"
+            end if
+          end try
+        end repeat
+      end try
+    end repeat
+    return "no"
+  end tell
+end tell
+'''
+    try:
+        return _run_nsapplescript(script).strip().lower().startswith("yes")
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _body_marker(html: str) -> str:
@@ -443,20 +510,39 @@ end tell
         return None
 
 
-def _body_landed(msg_id: str, marker: str) -> str:
-    """yes = thấy nội dung. no = thư trống hoặc không có đoạn đã soạn. unknown = không đọc được."""
-    mark = " ".join((marker or "").split()).lower()
-    if len(mark) < 8:
-        return "unknown"
+def _norm_plain(text: str | None) -> str:
+    return " ".join((text or "").split()).lower()
+
+
+def _body_landed(msg_id: str, marker: str, before: str | None = None) -> str:
+    """yes = nội dung mới đã vào. no = thư không đổi. unknown = không đọc được.
+
+    Chữ ký có sẵn không tính là đã dán. Đoạn mở đầu phải mới xuất hiện, hoặc thân thư dài thêm.
+    """
+    mark = _norm_plain(marker)
     plain = _outgoing_plain(msg_id)
     if plain is None:
         return "unknown"
-    got = " ".join(plain.split()).lower()
-    if not got:
-        return "no"
-    if mark[:24] in got:
+    got = _norm_plain(plain)
+    prev = _norm_plain(before) if before is not None else None
+    grew = prev is not None and len(got) > len(prev) + 12
+    if len(mark) < 8:
+        return "yes" if grew else "unknown"
+    fresh = mark[:24] in got and (prev is None or mark[:24] not in prev)
+    if fresh or grew:
         return "yes"
     return "no"
+
+
+def _wait_landed(msg_id: str, marker: str, before: str | None) -> str:
+    """Đọc hai lần. WebView có thể cập nhật content chậm hơn thao tác Paste."""
+    last = "no"
+    for pause in (0.28, 0.35):
+        time.sleep(pause)
+        last = _body_landed(msg_id, marker, before)
+        if last != "no":
+            return last
+    return last
 
 
 def _cg_cmd_return() -> None:
@@ -654,17 +740,16 @@ def paste_and_send_keyboard(
             "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
         )
 
+    before = _outgoing_plain(msg_id)
     marker = _body_marker(html)
     _write_clipboard(html)
     _paste_keystroke()
-    time.sleep(0.28)
-    landed = _body_landed(msg_id, marker)
+    landed = _wait_landed(msg_id, marker, before)
     if landed == "no":
-        # Body vừa nhận focus có thể nuốt lần dán đầu. Ghi lại clipboard và dán lần hai.
         _write_clipboard(html)
-        _cg_cmd_v()
-        time.sleep(0.35)
-        landed = _body_landed(msg_id, marker)
+        _paste_menu()
+        time.sleep(0.4)
+        landed = _body_landed(msg_id, marker, before)
     if landed == "no":
         raise RuntimeError(
             "Đã ở body nhưng nội dung soạn chưa vào thư.\n"

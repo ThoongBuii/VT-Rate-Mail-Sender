@@ -491,6 +491,39 @@ def embed_local_and_cid_images(html: str, cid_map: Optional[dict[str, str]] = No
     return re.sub(r"""src\s*=\s*["']([^"']+)["']""", _repl, html, flags=re.I)
 
 
+def _mac_webarchive_data(html: str):
+    """WebArchive — đúng kiểu Outlook Mac ghi khi Copy, body nhận Paste giàu chữ."""
+    try:
+        from Foundation import (  # type: ignore
+            NSData,
+            NSPropertyListBinaryFormat_v1_0,
+            NSPropertyListSerialization,
+        )
+    except ImportError:
+        return None
+    raw = (html or "").encode("utf-8")
+    if not raw:
+        return None
+    payload = {
+        "WebMainResource": {
+            "WebResourceData": NSData.dataWithBytes_length_(raw, len(raw)),
+            "WebResourceMIMEType": "text/html",
+            "WebResourceTextEncodingName": "UTF-8",
+            "WebResourceURL": "file:///vt-rate-mail.html",
+            "WebResourceFrameName": "",
+        }
+    }
+    try:
+        data, error = NSPropertyListSerialization.dataWithPropertyList_format_options_error_(
+            payload, NSPropertyListBinaryFormat_v1_0, 0, None
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if error or data is None:
+        return None
+    return data
+
+
 def set_mac_clipboard_html(html: str) -> None:
     """Ghi HTML lên clipboard macOS (để paste vào New Mail — gần InsertFile Windows)."""
     if platform.system() != "Darwin":
@@ -513,10 +546,33 @@ def set_mac_clipboard_html(html: str) -> None:
     else:
         wrapped = fragment
 
+    plain = re.sub(r"(?is)<br\s*/?>", "\n", fragment)
+    plain = re.sub(r"(?is)<[^>]+>", "", plain)
+    plain = html_lib.unescape(plain).strip()
+
+    # Khai báo một lần. setString từng type sau clearContents chỉ giữ type cuối,
+    # Outlook body (WebView + chữ ký) bỏ qua paste không có HTML / WebArchive.
+    types: list[str] = [
+        "com.apple.WebArchive",
+        "Apple Web Archive pasteboard type",
+        NSPasteboardTypeHTML,
+        "public.html",
+        "Apple HTML pasteboard type",
+    ]
+    if plain:
+        types.append(NSPasteboardTypeString)
+
     pb = NSPasteboard.generalPasteboard()
-    pb.clearContents()
-    # Nhiều type — Outlook Legacy Mac hay đọc public.html / Apple HTML
+    pb.declareTypes_owner_(types, None)
+    archive = _mac_webarchive_data(wrapped)
     wrote = False
+    if archive is not None:
+        for ptype in ("com.apple.WebArchive", "Apple Web Archive pasteboard type"):
+            try:
+                if pb.setData_forType_(archive, ptype):
+                    wrote = True
+            except Exception:  # noqa: BLE001
+                continue
     for ptype in (
         NSPasteboardTypeHTML,
         "public.html",
@@ -527,13 +583,13 @@ def set_mac_clipboard_html(html: str) -> None:
                 wrote = True
         except Exception:  # noqa: BLE001
             continue
+    if plain:
+        try:
+            pb.setString_forType_(plain, NSPasteboardTypeString)
+        except Exception:  # noqa: BLE001
+            pass
     if not wrote:
         raise RuntimeError("Không ghi được HTML lên clipboard (NSPasteboard).")
-    plain = re.sub(r"(?is)<br\s*/?>", "\n", fragment)
-    plain = re.sub(r"(?is)<[^>]+>", "", plain)
-    plain = html_lib.unescape(plain).strip()
-    if plain:
-        pb.setString_forType_(plain, NSPasteboardTypeString)
 
 
 def unwrap_outlook_copy_fragment(html: str) -> str:
