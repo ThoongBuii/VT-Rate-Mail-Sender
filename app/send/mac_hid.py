@@ -6,8 +6,8 @@ HID (trong KeyboardLock — chặn gõ user / Zalo):
   2) AX set focused ô Subject
   3) Tab 1 lần → body → Cmd+V → Cmd+Return
 
-Tab/Cmd gửi thẳng vào process Outlook, mỗi mail một event source mới.
-Khoá phím không tạo tap chồng sau nhiều mail. Không chuột. Không thử AX Body.
+Tab/Cmd gửi vào đúng PID Outlook đang sống. Outlook tắt rồi mở lại thì lấy PID mới.
+Chưa rời Subject thì không dán và không gửi. Không chuột. Không thử AX Body.
 """
 
 from __future__ import annotations
@@ -281,33 +281,47 @@ def _mark_synth(event) -> None:
 _OUTLOOK_PID = 0
 
 
-def _outlook_pid() -> int:
-    global _OUTLOOK_PID
-    if _OUTLOOK_PID > 0:
-        return _OUTLOOK_PID
-    try:
-        from AppKit import NSWorkspace  # type: ignore
+def _is_outlook_app(app) -> bool:
+    bid = str(app.bundleIdentifier() or "")
+    name = str(app.localizedName() or "")
+    return bid == "com.microsoft.Outlook" or name == "Microsoft Outlook"
 
+
+def _outlook_pid() -> int:
+    """PID Outlook đang sống. Tắt Outlook rồi mở lại thì bỏ PID cũ."""
+    global _OUTLOOK_PID
+    try:
+        from AppKit import NSRunningApplication, NSWorkspace  # type: ignore
+
+        if _OUTLOOK_PID > 0:
+            current = NSRunningApplication.runningApplicationWithProcessIdentifier_(
+                _OUTLOOK_PID
+            )
+            if current is not None and _is_outlook_app(current):
+                return _OUTLOOK_PID
+            _OUTLOOK_PID = 0
         for app in NSWorkspace.sharedWorkspace().runningApplications():
-            bid = str(app.bundleIdentifier() or "")
-            name = str(app.localizedName() or "")
-            if bid == "com.microsoft.Outlook" or name == "Microsoft Outlook":
+            if _is_outlook_app(app):
                 _OUTLOOK_PID = int(app.processIdentifier())
                 return _OUTLOOK_PID
     except Exception:  # noqa: BLE001
-        return 0
+        _OUTLOOK_PID = 0
     return 0
 
 
-def _post_to_outlook(event) -> None:
-    """Đưa phím thẳng vào Outlook — tap phiên (khoá phím) không đứng trên đường này."""
-    from Quartz import CGEventPost, CGEventPostToPid, kCGHIDEventTap  # type: ignore
+def _post_to_outlook(event, *, required: bool = True) -> None:
+    """Đưa phím thẳng vào Outlook đang chạy. Không bắn ra app khác."""
+    from Quartz import CGEventPostToPid  # type: ignore
 
     pid = _outlook_pid()
     if pid > 0:
         CGEventPostToPid(pid, event)
         return
-    CGEventPost(kCGHIDEventTap, event)
+    if required:
+        raise RuntimeError(
+            "Outlook không còn là tiến trình app đang giữ.\n"
+            "Không gửi — tránh mail không có nội dung."
+        )
 
 
 def _release_modifiers_quiet() -> None:
@@ -324,7 +338,7 @@ def _release_modifiers_quiet() -> None:
         return
     CGEventSetType(ev, kCGEventFlagsChanged)
     CGEventSetFlags(ev, 0)
-    _post_to_outlook(ev)
+    _post_to_outlook(ev, required=False)
 
 
 def _cg_key(keycode: int, *, flags: int = 0) -> None:
@@ -374,6 +388,13 @@ _TAIL_FOCUS = """
     set focused of found to true
     delay 0.03
     return "ok"
+"""
+
+_TAIL_READ_FOCUS = """
+    try
+      if (focused of found) is true then return "subject"
+    end try
+    return "moved"
 """
 
 
@@ -505,18 +526,46 @@ def focus_subject_carefully(
     return "ax"
 
 
+def _read_subject_focus(subject_hint: str) -> str:
+    """subject = còn ở Subject. moved = đã rời. unknown = không đọc được."""
+    try:
+        raw = _run_nsapplescript(
+            _subject_field_script(subject_hint, _TAIL_READ_FOCUS, activate=False)
+        )
+        state = (raw or "").strip().lower()
+    except Exception:  # noqa: BLE001
+        return "unknown"
+    if state in {"subject", "moved"}:
+        return state
+    return "unknown"
+
+
 def paste_and_send_keyboard(
     *,
     subject_hint: str = "",
     msg_id: str = "",
     already_raised: bool = False,
 ) -> None:
-    """AX Subject → Tab 1 → paste → Cmd+Return. Cùng nhịp bản đầu."""
+    """AX Subject → Tab 1 → chỉ dán và gửi khi đã rời Subject."""
+    if _outlook_pid() <= 0:
+        raise RuntimeError(
+            "Outlook không đang chạy cùng app.\n"
+            "Không gửi — tránh mail không có nội dung."
+        )
     focus_subject_carefully(
         subject_hint=subject_hint, msg_id=msg_id, already_raised=already_raised
     )
     _cg_tab()
     time.sleep(0.04)
+    where = _read_subject_focus(subject_hint)
+    if where == "subject":
+        time.sleep(0.12)
+        where = _read_subject_focus(subject_hint)
+    if where != "moved":
+        raise RuntimeError(
+            "Chưa rời ô Subject nên không dán nội dung.\n"
+            "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
+        )
     _cg_cmd_v()
     time.sleep(0.22)
     _cg_cmd_return()
