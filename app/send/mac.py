@@ -514,6 +514,7 @@ end tell
         Không Cmd+W lan sang New Mail khác.
         """
         from .mac_hid import (
+            capture_message_clip,
             claim_outlook_compose,
             close_compose_by_id,
             paste_and_send_keyboard,
@@ -559,6 +560,9 @@ tell application "Microsoft Outlook"
 end tell
 '''
 
+        # Một bản copy của thư này, lưu trước khi đụng Outlook. Lúc dán chỉ Paste.
+        clip = capture_message_clip(prepared)
+
         msg_id = ""
         with keyboard_guard(pre_focus_s=0.5):
             try:
@@ -593,6 +597,7 @@ end tell
                     msg_id=msg_id,
                     already_raised=True,
                     html=prepared,
+                    clip=clip,
                 )
             except Exception as exc:  # noqa: BLE001
                 # Giữ cửa sổ để user gửi/sửa tay. Không đóng, không xếp gửi lại.

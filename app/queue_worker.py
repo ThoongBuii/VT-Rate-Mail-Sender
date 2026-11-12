@@ -5,6 +5,7 @@ import threading
 import time
 from typing import Callable, Optional
 
+from .message_hold import hold, release
 from .models import AgencyMail, MailStatus, ManualCompose, SendLogEntry, SendProgress
 from .sender import OutlookDesktopSender
 
@@ -121,6 +122,9 @@ class SemiAutoQueue:
 
     def _run(self, mails: list[AgencyMail]) -> None:
         try:
+            # Ghim nội dung khung Soạn một lần. Không đọc lại mỗi mail.
+            frozen = mails[0].template_mail if mails else ""
+            hold(frozen)
             for idx, mail in enumerate(mails):
                 if self._stop.is_set():
                     break
@@ -136,18 +140,6 @@ class SemiAutoQueue:
 
                 self.progress.current_index = idx
                 self.progress.current_agency = mail.agency_company or mail.account_mail
-                # Áp SOẠN mới nhất ngay trước gửi (Pause → sửa Soạn → Resume).
-                if self.compose_provider:
-                    try:
-                        comp = self.compose_provider() or {}
-                        if "subject" in comp and comp["subject"] is not None:
-                            mail.subject = str(comp["subject"])
-                        if "template_html" in comp and comp["template_html"] is not None:
-                            mail.template_mail = str(comp["template_html"])
-                        if "attachment" in comp and comp["attachment"] is not None:
-                            mail.attachment = str(comp["attachment"])
-                    except Exception:  # noqa: BLE001
-                        pass
                 mail.status = MailStatus.SENDING
                 self._emit()
 
@@ -186,6 +178,8 @@ class SemiAutoQueue:
                     if not self._wait_interruptible(delay):
                         break
         finally:
+            # List xong hoặc Stop: thả bản nội dung đã giữ.
+            release()
             self.progress.is_running = False
             self.progress.is_paused = False
             self.progress.wait_remaining = 0.0

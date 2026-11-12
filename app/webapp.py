@@ -915,7 +915,11 @@ def api_send_resume():
     if "subject" in data:
         STATE.subject = str(data.get("subject") or "").strip()
     if "template_html" in data:
-        STATE.template_html = str(data.get("template_html") or "")
+        new_template = str(data.get("template_html") or "")
+        from .message_hold import replace_if_edited
+
+        replace_if_edited(new_template)
+        STATE.template_html = new_template
     if "attachment" in data:
         STATE.attachment = str(data.get("attachment") or "").strip()
     if any(k in data for k in ("subject", "template_html", "attachment")):

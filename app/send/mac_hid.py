@@ -4,11 +4,11 @@ AS (mac.py): New Mail + To/Cc/Subject  →  caret mặc định ở To
 HID (trong KeyboardLock — chặn gõ user / Zalo):
   1) open(msg id) + buộc Outlook frontmost
   2) AX set focused ô Subject
-  3) Copy nội dung thư bằng WebKit (như Cmd+C) → Tab 1 lần → body → Cmd+V thật
-     → gửi khi nội dung đã vào thư
+  3) Bản copy của thư lấy một lần và lưu lại
+  4) Tab 1 lần → body → chỉ Cmd+V hoặc Paste bản đã lưu → gửi khi nội dung đã vào thư
 
-Ghi HTML tay lên clipboard thiếu RTF / WebKit pasteboard, ô soạn bỏ qua.
-Cmd+V bắn bằng CGEventPostToPid không kích hoạt Paste. Tắt tap trong lúc bấm.
+Không copy lại trong lúc dán. Cmd+V bắn bằng CGEventPostToPid không kích hoạt Paste.
+Tắt tap trong lúc bấm.
 
 Tab/Cmd gửi vào đúng PID Outlook đang sống. Outlook tắt rồi mở lại thì lấy PID mới.
 Chưa rời Subject thì không dán và không gửi. Không chuột. Không thử AX Body.
@@ -412,11 +412,38 @@ def _compact(text: str | None) -> str:
     return "".join((text or "").split()).lower()
 
 
-def _copy_rendered_message(html: str) -> None:
-    """Copy đúng thao tác: mở nội dung thư trong WebKit, chọn hết, Cmd+C.
+def _snapshot_pasteboard() -> list[tuple[str, bytes]]:
+    from AppKit import NSPasteboard  # type: ignore
 
-    Phải chạy trên main thread. Cửa sổ trong suốt, ngoài màn hình, không chiếm Outlook.
-    """
+    pb = NSPasteboard.generalPasteboard()
+    out: list[tuple[str, bytes]] = []
+    for ptype in list(pb.types() or []):
+        data = pb.dataForType_(ptype)
+        if data is None:
+            continue
+        raw = bytes(data)
+        if raw:
+            out.append((str(ptype), raw))
+    return out
+
+
+def _restore_clip(clip: list[tuple[str, bytes]]) -> None:
+    """Đặt lại đúng bản đã lưu. Không copy mới."""
+    from AppKit import NSData, NSPasteboard  # type: ignore
+
+    if not clip:
+        raise RuntimeError(
+            "Chưa có bản copy nội dung thư.\n"
+            "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
+        )
+    pb = NSPasteboard.generalPasteboard()
+    pb.declareTypes_owner_([ptype for ptype, _raw in clip], None)
+    for ptype, raw in clip:
+        pb.setData_forType_(NSData.dataWithBytes_length_(raw, len(raw)), ptype)
+
+
+def _copy_rendered_message(html: str) -> list[tuple[str, bytes]]:
+    """Một lần Cmd+C của đúng thư, trả về bản lưu. Cửa sổ trong suốt, không chiếm Outlook."""
     from AppKit import (  # type: ignore
         NSBackingStoreBuffered,
         NSMakeRect,
@@ -478,39 +505,54 @@ def _copy_rendered_message(html: str) -> None:
 
     plain = NSPasteboard.generalPasteboard().stringForType_("public.utf8-plain-text") or ""
     mark = _compact(html_visible_text(html))[:32]
-    if len(mark) < 8 or mark not in _compact(plain):
+    clip = _snapshot_pasteboard()
+    if len(mark) < 8 or mark not in _compact(plain) or not clip:
         raise RuntimeError(
             "Không copy được nội dung thư trên app.\n"
             "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
         )
+    return clip
 
 
-def _write_clipboard(html: str) -> None:
-    """Copy nội dung thư trên main thread. Outlook chỉ nhận pasteboard do WebKit tạo."""
+def capture_message_clip(html: str) -> list[tuple[str, bytes]]:
+    """Lấy một bản copy của thư và lưu đến khi list xong hoặc Pause rồi sửa nội dung."""
+    import hashlib
+
+    from ..message_hold import cached_clip, store_clip
+
+    key = hashlib.sha256((html or "").encode("utf-8")).hexdigest()
+    cached = cached_clip(key)
+    if cached:
+        return cached
+
     if threading.current_thread() is threading.main_thread():
-        _copy_rendered_message(html)
-        return
-    from Foundation import NSOperationQueue  # type: ignore
+        clip = _copy_rendered_message(html)
+    else:
+        from Foundation import NSOperationQueue  # type: ignore
 
-    box: dict = {"err": None}
-    done = threading.Event()
+        box: dict = {"err": None, "clip": None}
+        done = threading.Event()
 
-    def _block() -> None:
-        try:
-            _copy_rendered_message(html)
-        except Exception as exc:  # noqa: BLE001
-            box["err"] = exc
-        finally:
-            done.set()
+        def _block() -> None:
+            try:
+                box["clip"] = _copy_rendered_message(html)
+            except Exception as exc:  # noqa: BLE001
+                box["err"] = exc
+            finally:
+                done.set()
 
-    NSOperationQueue.mainQueue().addOperationWithBlock_(_block)
-    if not done.wait(timeout=6):
-        raise RuntimeError(
-            "Không copy được nội dung thư trên app.\n"
-            "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
-        )
-    if box["err"] is not None:
-        raise box["err"]
+        NSOperationQueue.mainQueue().addOperationWithBlock_(_block)
+        if not done.wait(timeout=6):
+            raise RuntimeError(
+                "Không copy được nội dung thư trên app.\n"
+                "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
+            )
+        if box["err"] is not None:
+            raise box["err"]
+        clip = box["clip"]
+
+    store_clip(key, clip)
+    return clip
 
 
 def _paste_keystroke() -> None:
@@ -797,8 +839,9 @@ def paste_and_send_keyboard(
     msg_id: str = "",
     already_raised: bool = False,
     html: str = "",
+    clip: list | None = None,
 ) -> None:
-    """Subject → Tab 1 → ghi clipboard → Paste vào body → gửi khi nội dung đã vào thư."""
+    """Subject → Tab 1 → dán đúng bản copy đã lưu. Không copy lại."""
     if _outlook_pid() <= 0:
         raise RuntimeError(
             "Outlook không đang chạy cùng app.\n"
@@ -819,13 +862,18 @@ def paste_and_send_keyboard(
             "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
         )
 
+    if not clip:
+        raise RuntimeError(
+            "Chưa có bản copy nội dung thư.\n"
+            "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
+        )
     before = _outgoing_plain(msg_id)
     marker = _body_marker(html)
-    _write_clipboard(html)
+    _restore_clip(clip)
     _paste_keystroke()
     landed = _wait_landed(msg_id, marker, before)
     if landed == "no":
-        # Clipboard vẫn là bản WebKit vừa copy. Copy lại sẽ kéo focus khỏi Outlook.
+        _restore_clip(clip)
         _paste_menu()
         time.sleep(0.4)
         landed = _body_landed(msg_id, marker, before)
