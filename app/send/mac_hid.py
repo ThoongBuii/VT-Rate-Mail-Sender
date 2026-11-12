@@ -1148,29 +1148,65 @@ def _dispatch_done(msg_id: str) -> bool:
     return _outgoing_dispatch(msg_id) in {"sent", "gone"}
 
 
+def _click_front_send() -> None:
+    """Bấm nút Send trên cửa sổ đang trước mặt, nếu nút đó có."""
+    script = '''
+tell application "System Events"
+  tell process "Microsoft Outlook"
+    set frontmost to true
+    try
+      set w to front window
+      set spots to {w}
+      try
+        set spots to spots & toolbars of w
+      end try
+      try
+        set spots to spots & groups of w
+      end try
+      repeat with spot in spots
+        try
+          repeat with b in buttons of spot
+            set nm to ""
+            set dsc to ""
+            try
+              set nm to name of b as text
+            end try
+            try
+              set dsc to description of b as text
+            end try
+            if nm is "Send" or nm is "Gửi" or dsc is "Send" or dsc is "Gửi" then
+              click b
+              return "yes"
+            end if
+          end repeat
+        end try
+      end repeat
+    end try
+    return "no"
+  end tell
+end tell
+'''
+    try:
+        _run_nsapplescript(script)
+    except Exception:  # noqa: BLE001
+        return
+
+
 def send_outgoing(msg_id: str, *, subject_hint: str = "") -> None:
-    """Chờ đúng cửa sổ, bấm Send vài lần. Đã gửi khi thư rời hộp chờ."""
+    """Mở đúng thư rồi Cmd+Return. Không cần đọc được tên cửa sổ."""
+    del subject_hint
     mid = (msg_id or "").strip()
     if not mid.isdigit():
         raise RuntimeError("Không gửi được thư này.")
-    raised = False
-    deadline = time.time() + 1.6
-    while time.time() < deadline:
-        if _raise_compose_window(subject_hint):
-            raised = True
-            break
-        time.sleep(0.2)
-    if not raised:
-        raise RuntimeError("Không thấy cửa sổ New Mail để bấm Send.")
-    for _ in range(3):
-        _raise_compose_window(subject_hint)
+    if not open_compose_by_id(mid):
+        raise RuntimeError("Không mở được cửa sổ New Mail.")
+    time.sleep(0.35)
+    for _ in range(2):
         _press_send_shortcut()
-        for pause in (0.3, 0.45):
+        _click_front_send()
+        deadline = time.time() + 1.2
+        while time.time() < deadline:
             if _dispatch_done(mid):
                 return
-            time.sleep(pause)
-        _click_send_button(subject_hint)
-        if _dispatch_done(mid):
-            return
-        time.sleep(0.2)
+            time.sleep(0.3)
     raise RuntimeError("Outlook chưa chuyển thư này sang Sent.")
