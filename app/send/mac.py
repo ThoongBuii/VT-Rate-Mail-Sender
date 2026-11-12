@@ -17,7 +17,7 @@ from ctypes import c_bool, c_void_p, cdll
 from pathlib import Path
 from typing import Any, Optional
 
-from ..models import AppConfig, ManualCompose
+from ..models import AppConfig
 from ..paths import user_data_dir
 from .html_merge import html_visible_text
 
@@ -510,8 +510,8 @@ end tell
         attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
-        Tạo thư, ghi nội dung, mở New Mail, bấm Send.
-        Đã gửi khi thư rời hộp chờ. Chưa xác nhận thì bỏ qua, không dừng hàng.
+        Tạo thư, ghi nội dung, mở New Mail, bấm Cmd+Return.
+        Lệnh phím chạy xong là đã gửi. Không đọc Sent Items.
         """
         from .mac_hid import (
             _delete_outgoing,
@@ -585,13 +585,7 @@ end tell
         if not open_compose_by_id(msg_id):
             raise RuntimeError("Không mở được cửa sổ New Mail.")
 
-        try:
-            send_outgoing(msg_id, subject_hint=subject)
-        except Exception as exc:  # noqa: BLE001
-            raise ManualCompose(
-                "Chưa xác nhận đã gửi — bỏ qua, sang agent tiếp theo.\n"
-                f"{exc}"
-            ) from exc
+        send_outgoing(msg_id, subject_hint=subject)
 
 
 

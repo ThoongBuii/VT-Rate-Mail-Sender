@@ -1,8 +1,6 @@
-"""Mac — ghi nội dung, mở New Mail, bấm Send, rồi sang thư sau.
+"""Mac — ghi nội dung, mở New Mail, bấm Cmd+Return, rồi sang thư sau.
 
-Đã gửi khi Outlook chuyển thư khỏi hộp chờ, không dựa vào cửa sổ còn mở.
-Máy đọc Accessibility khác nhau nên cửa sổ dễ báo sai. Chưa xác nhận thì bỏ qua,
-không dừng hàng.
+Lệnh Cmd+Return chạy xong là đã gửi. Không đọc Sent Items hay hộp chờ.
 """
 
 from __future__ import annotations
@@ -1127,8 +1125,8 @@ end tell
         return False
 
 
-def _press_send_shortcut() -> None:
-    """Cmd+Return thật, cùng phím với nút Send. Không bắn phím giả vào PID."""
+def _press_send_shortcut() -> bool:
+    """Cmd+Return, cùng phím với nút Send. True khi lệnh phím chạy xong."""
     script = '''
 tell application "System Events"
   tell process "Microsoft Outlook"
@@ -1139,9 +1137,14 @@ end tell
 '''
     try:
         _run_nsapplescript(script)
+        return True
     except Exception:  # noqa: BLE001
-        _cg_cmd_return()
-        _release_modifiers_quiet()
+        try:
+            _cg_cmd_return()
+            _release_modifiers_quiet()
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
 
 def _dispatch_done(msg_id: str) -> bool:
@@ -1193,7 +1196,7 @@ end tell
 
 
 def send_outgoing(msg_id: str, *, subject_hint: str = "") -> None:
-    """Mở đúng thư rồi Cmd+Return. Không cần đọc được tên cửa sổ."""
+    """Mở đúng thư rồi Cmd+Return một lần. Lệnh phím xong là đã gửi."""
     del subject_hint
     mid = (msg_id or "").strip()
     if not mid.isdigit():
@@ -1201,12 +1204,5 @@ def send_outgoing(msg_id: str, *, subject_hint: str = "") -> None:
     if not open_compose_by_id(mid):
         raise RuntimeError("Không mở được cửa sổ New Mail.")
     time.sleep(0.35)
-    for _ in range(2):
-        _press_send_shortcut()
-        _click_front_send()
-        deadline = time.time() + 1.2
-        while time.time() < deadline:
-            if _dispatch_done(mid):
-                return
-            time.sleep(0.3)
-    raise RuntimeError("Outlook chưa chuyển thư này sang Sent.")
+    if not _press_send_shortcut():
+        raise RuntimeError("Không bấm được Cmd+Return.")
