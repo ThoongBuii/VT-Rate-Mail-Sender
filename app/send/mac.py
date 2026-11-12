@@ -510,8 +510,8 @@ end tell
         attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
-        Tạo thư, ghi nội dung, mở New Mail, rồi send đúng id đó.
-        Không Tab, không Paste. Không Cmd+W lan sang New Mail khác.
+        Tạo thư, ghi nội dung, mở New Mail, rồi bấm nút Send.
+        Không Tab, không Paste. Không ghi đã gửi nếu cửa sổ vẫn mở.
         """
         from .mac_hid import (
             _delete_outgoing,
@@ -598,7 +598,7 @@ end tell
                 )
 
             try:
-                send_outgoing(msg_id)
+                send_outgoing(msg_id, subject_hint=subject)
             except Exception as exc:  # noqa: BLE001
                 # Giữ cửa sổ để user gửi tay. Không đóng, không xếp gửi lại.
                 raise ManualCompose(

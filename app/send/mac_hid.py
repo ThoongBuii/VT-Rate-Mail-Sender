@@ -1,8 +1,8 @@
-"""Mac — ghi nội dung vào thư, mở New Mail, rồi gửi.
+"""Mac — ghi nội dung vào thư, mở New Mail, rồi bấm nút Send.
 
-Ô soạn nhận HTML khi ghi vào content trước lúc mở cửa sổ. Chữ ký AMBER
-do Outlook gắn lúc mở, không nằm trong content. Không Tab, không Paste.
-Gửi bằng lệnh send của đúng thư đó.
+Lệnh AppleScript `send` trả về ngay nhưng Outlook không phát thư
+(banner «A message could not be sent»). Nút Send trên cửa sổ mới là thao tác gửi được.
+Không Tab, không Paste. Chỉ coi là đã gửi khi cửa sổ New Mail đóng.
 """
 
 from __future__ import annotations
@@ -1017,17 +1017,101 @@ def _content_has_body(msg_id: str, marker: str) -> str:
     return "no"
 
 
-def send_outgoing(msg_id: str) -> None:
-    """Gửi đúng New Mail đang mở. Không Tab, không Paste, không Cmd+Return."""
+def _click_send_button(subject_hint: str) -> bool:
+    """Bấm nút Send trên đúng cửa sổ New Mail. Không đi qua lệnh AppleScript send."""
+    script = f'''
+tell application "System Events"
+  tell process "Microsoft Outlook"
+    set frontmost to true
+{_compose_picker_as(subject_hint)}
+    if targetWin is missing value then return "no-win"
+    try
+      perform action "AXRaise" of targetWin
+    end try
+    set spots to {{targetWin}}
+    try
+      set spots to spots & toolbars of targetWin
+    end try
+    try
+      set spots to spots & groups of targetWin
+    end try
+    try
+      set spots to spots & UI elements of targetWin
+    end try
+    try
+      repeat with g in groups of targetWin
+        try
+          set spots to spots & groups of g
+        end try
+        try
+          set spots to spots & UI elements of g
+        end try
+      end repeat
+    end try
+    repeat with spot in spots
+      try
+        repeat with b in buttons of spot
+          set nm to ""
+          set dsc to ""
+          try
+            set nm to name of b as text
+          end try
+          try
+            set dsc to description of b as text
+          end try
+          if nm is "Send" or nm is "Gửi" or dsc is "Send" or dsc is "Gửi" then
+            click b
+            return "yes"
+          end if
+        end repeat
+      end try
+    end repeat
+    return "no"
+  end tell
+end tell
+'''
+    try:
+        return _run_nsapplescript(script).strip().lower().startswith("yes")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _compose_window_open(subject_hint: str) -> bool:
+    """True khi cửa sổ soạn còn đó. Không đọc được thì coi như còn mở."""
+    script = f'''
+tell application "System Events"
+  tell process "Microsoft Outlook"
+{_compose_picker_as(subject_hint)}
+    if targetWin is missing value then return "no"
+    return "yes"
+  end tell
+end tell
+'''
+    try:
+        return _run_nsapplescript(script).strip().lower().startswith("yes")
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def send_outgoing(msg_id: str, *, subject_hint: str = "") -> None:
+    """Bấm Send. Lệnh AppleScript send không phát được thư dù đủ ô."""
     mid = (msg_id or "").strip()
     if not mid.isdigit():
         raise RuntimeError(
             "Không gửi được thư này.\n"
             "Cửa sổ New Mail vẫn mở để gửi tay."
         )
-    script = f'''
-tell application "Microsoft Outlook"
-  send outgoing message id {mid}
-end tell
-'''
-    _run_nsapplescript(script)
+    if not _click_send_button(subject_hint):
+        # Cùng phím tắt với nút Send. Không dùng lệnh send của AppleScript.
+        _cg_cmd_return()
+        time.sleep(0.05)
+        _release_modifiers_quiet()
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if not _compose_window_open(subject_hint):
+            return
+        time.sleep(0.25)
+    raise RuntimeError(
+        "Outlook không gửi được thư này — cửa sổ New Mail vẫn mở.\n"
+        "Bấm Send trên cửa sổ đó."
+    )
