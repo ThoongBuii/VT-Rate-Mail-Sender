@@ -1,17 +1,10 @@
-"""Mac HID tối thiểu — quy trình chuẩn (đã probe Legacy):
+"""Mac — đưa nội dung vào New Mail rồi mới gửi.
 
-AS (mac.py): New Mail + To/Cc/Subject  →  caret mặc định ở To
-HID (trong KeyboardLock — chặn gõ user / Zalo):
-  1) open(msg id) + buộc Outlook frontmost
-  2) AX set focused ô Subject
-  3) Bản copy của thư lấy một lần và lưu lại
-  4) Tab 1 lần → body → chỉ Cmd+V hoặc Paste bản đã lưu → gửi khi nội dung đã vào thư
+Ô soạn WebView bỏ qua clipboard do app tạo (RTF/HTML/WebArchive đều không vào thân thư).
+Nội dung ghi thẳng vào thuộc tính content của outgoing message, rồi mới mở cửa sổ.
+Chữ ký không nằm trong content: thư trống vẫn hiện AMBER. Ghi content không đè chữ ký.
 
-Không copy lại trong lúc dán. Cmd+V bắn bằng CGEventPostToPid không kích hoạt Paste.
-Tắt tap trong lúc bấm.
-
-Tab/Cmd gửi vào đúng PID Outlook đang sống. Outlook tắt rồi mở lại thì lấy PID mới.
-Chưa rời Subject thì không dán và không gửi. Không chuột. Không thử AX Body.
+Chỉ Cmd+Return khi content đã có đoạn mở đầu của thư. Không gửi nếu chưa có.
 """
 
 from __future__ import annotations
@@ -969,6 +962,63 @@ def _read_subject_focus(subject_hint: str) -> str:
     return "unknown"
 
 
+def _write_outgoing_content(msg_id: str, html: str) -> None:
+    """Ghi HTML đã soạn vào content. File tạm xoá ngay — không để lại bản copy."""
+    import os
+    import tempfile
+
+    mid = (msg_id or "").strip()
+    fragment = (html or "").strip()
+    if not mid.isdigit() or not fragment:
+        raise RuntimeError("Không ghi được nội dung thư vào Outlook.")
+    fd, path = tempfile.mkstemp(prefix="vtmail_", suffix=".html")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(fragment)
+        script = f'''
+tell application "Microsoft Outlook"
+  set htmlText to read (POSIX file "{_esc_as(path)}") as «class utf8»
+  set content of outgoing message id {mid} to htmlText
+end tell
+'''
+        _run_nsapplescript(script)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _delete_outgoing(msg_id: str) -> None:
+    mid = (msg_id or "").strip()
+    if not mid.isdigit():
+        return
+    script = f'''
+tell application "Microsoft Outlook"
+  try
+    delete outgoing message id {mid}
+  end try
+end tell
+'''
+    try:
+        _run_nsapplescript(script)
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _content_has_body(msg_id: str, marker: str) -> str:
+    """yes = content đã có đoạn thư. no = chưa có. unknown = không đọc được."""
+    mark = _norm_plain(marker)
+    plain = _outgoing_plain(msg_id)
+    if plain is None:
+        return "unknown"
+    if len(mark) < 8:
+        return "unknown"
+    if mark[:24] in _norm_plain(plain):
+        return "yes"
+    return "no"
+
+
 def paste_and_send_keyboard(
     *,
     subject_hint: str = "",
@@ -977,7 +1027,8 @@ def paste_and_send_keyboard(
     html: str = "",
     clip: list | None = None,
 ) -> None:
-    """Subject → Tab 1 → dán đúng bản copy đã lưu. Không copy lại."""
+    """Cửa sổ đã mở với content. Kiểm tra đoạn thư rồi mới Cmd+Return."""
+    del clip
     if _outlook_pid() <= 0:
         raise RuntimeError(
             "Outlook không đang chạy cùng app.\n"
@@ -986,36 +1037,20 @@ def paste_and_send_keyboard(
     focus_subject_carefully(
         subject_hint=subject_hint, msg_id=msg_id, already_raised=already_raised
     )
-    _cg_tab()
-    time.sleep(0.04)
-    where = _read_subject_focus(subject_hint)
-    if where == "subject":
-        time.sleep(0.12)
-        where = _read_subject_focus(subject_hint)
-    if where != "moved":
+    if not (html or "").strip():
         raise RuntimeError(
-            "Chưa rời ô Subject nên không dán nội dung.\n"
+            "Chưa có nội dung thư.\n"
             "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
         )
-
-    if not (html or "").strip() and not clip:
-        raise RuntimeError(
-            "Chưa có bản copy nội dung thư.\n"
-            "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
-        )
-    before = _outgoing_plain(msg_id)
     marker = _body_marker(html)
-    _place_saved_message(html)
-    _paste_when_ready()
-    landed = _wait_landed(msg_id, marker, before)
+    landed = _content_has_body(msg_id, marker)
     if landed == "no":
-        _place_saved_message(html)
-        _paste_keystroke()
-        time.sleep(0.4)
-        landed = _body_landed(msg_id, marker, before)
+        _write_outgoing_content(msg_id, html)
+        time.sleep(0.2)
+        landed = _content_has_body(msg_id, marker)
     if landed == "no":
         raise RuntimeError(
-            "Đã ở body nhưng nội dung soạn chưa vào thư.\n"
+            "Đã mở thư nhưng nội dung soạn chưa vào.\n"
             "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
         )
     _cg_cmd_return()

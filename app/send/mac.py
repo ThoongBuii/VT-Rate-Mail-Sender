@@ -514,7 +514,8 @@ end tell
         Không Cmd+W lan sang New Mail khác.
         """
         from .mac_hid import (
-            capture_message_clip,
+            _delete_outgoing,
+            _write_outgoing_content,
             claim_outlook_compose,
             close_compose_by_id,
             paste_and_send_keyboard,
@@ -555,13 +556,9 @@ tell application "Microsoft Outlook"
   set subject of msg to "{_esc(subject)}"
 {recip_block}
 {att_block}
-  open msg
   return id of msg as string
 end tell
 '''
-
-        # Một bản copy của thư này, lưu trước khi đụng Outlook. Lúc dán chỉ Paste.
-        clip = capture_message_clip(prepared)
 
         msg_id = ""
         with keyboard_guard(pre_focus_s=0.5):
@@ -580,6 +577,15 @@ end tell
             if not msg_id:
                 raise RuntimeError("Không lấy được id New Mail.")
 
+            try:
+                _write_outgoing_content(msg_id, prepared)
+            except Exception as exc:  # noqa: BLE001
+                _delete_outgoing(msg_id)
+                raise RuntimeError(
+                    "Không ghi được nội dung thư vào Outlook.\n"
+                    f"{exc}"
+                ) from exc
+
             if not wait_compose_window(
                 timeout=1.4, subject_hint=subject, msg_id=msg_id
             ) and not claim_outlook_compose(
@@ -597,7 +603,6 @@ end tell
                     msg_id=msg_id,
                     already_raised=True,
                     html=prepared,
-                    clip=clip,
                 )
             except Exception as exc:  # noqa: BLE001
                 # Giữ cửa sổ để user gửi/sửa tay. Không đóng, không xếp gửi lại.
