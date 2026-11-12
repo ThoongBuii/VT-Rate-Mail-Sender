@@ -1,8 +1,8 @@
-"""Mac — ghi nội dung vào thư, mở New Mail, rồi bấm nút Send.
+"""Mac — ghi nội dung, mở New Mail, bấm Send, rồi sang thư sau.
 
-Lệnh AppleScript `send` trả về ngay nhưng Outlook không phát thư
-(banner «A message could not be sent»). Nút Send trên cửa sổ mới là thao tác gửi được.
-Không Tab, không Paste. Chỉ coi là đã gửi khi cửa sổ New Mail đóng.
+Đã gửi khi Outlook chuyển thư khỏi hộp chờ, không dựa vào cửa sổ còn mở.
+Máy đọc Accessibility khác nhau nên cửa sổ dễ báo sai. Chưa xác nhận thì bỏ qua,
+không dừng hàng.
 """
 
 from __future__ import annotations
@@ -1076,42 +1076,47 @@ end tell
         return False
 
 
-def _compose_window_open(subject_hint: str) -> bool:
-    """True khi cửa sổ soạn còn đó. Không đọc được thì coi như còn mở."""
+def _outgoing_dispatch(msg_id: str) -> str:
+    """sent = Outlook đã nhận gửi. gone = thư không còn trong hộp chờ. pending = còn nháp."""
+    mid = (msg_id or "").strip()
+    if not mid.isdigit():
+        return "unknown"
     script = f'''
-tell application "System Events"
-  tell process "Microsoft Outlook"
-{_compose_picker_as(subject_hint)}
-    if targetWin is missing value then return "no"
-    return "yes"
-  end tell
+tell application "Microsoft Outlook"
+  try
+    if not (exists outgoing message id {mid}) then return "gone"
+    set m to outgoing message id {mid}
+    try
+      if was sent of m is true then return "sent"
+    end try
+    return "pending"
+  on error
+    return "unknown"
+  end try
 end tell
 '''
     try:
-        return _run_nsapplescript(script).strip().lower().startswith("yes")
+        state = (_run_nsapplescript(script) or "").strip().lower()
     except Exception:  # noqa: BLE001
-        return True
+        return "unknown"
+    if state in {"sent", "gone", "pending", "unknown"}:
+        return state
+    return "unknown"
 
 
 def send_outgoing(msg_id: str, *, subject_hint: str = "") -> None:
-    """Bấm Send. Lệnh AppleScript send không phát được thư dù đủ ô."""
+    """Bấm Send. Coi là đã gửi khi thư rời hộp chờ, không nhìn cửa sổ."""
     mid = (msg_id or "").strip()
     if not mid.isdigit():
-        raise RuntimeError(
-            "Không gửi được thư này.\n"
-            "Cửa sổ New Mail vẫn mở để gửi tay."
-        )
+        raise RuntimeError("Không gửi được thư này.")
     if not _click_send_button(subject_hint):
         # Cùng phím tắt với nút Send. Không dùng lệnh send của AppleScript.
         _cg_cmd_return()
         time.sleep(0.05)
         _release_modifiers_quiet()
-    deadline = time.time() + 2.0
-    while time.time() < deadline:
-        if not _compose_window_open(subject_hint):
+    for pause in (0.2, 0.35, 0.5, 0.7, 1.0):
+        state = _outgoing_dispatch(mid)
+        if state in {"sent", "gone"}:
             return
-        time.sleep(0.25)
-    raise RuntimeError(
-        "Outlook không gửi được thư này — cửa sổ New Mail vẫn mở.\n"
-        "Bấm Send trên cửa sổ đó."
-    )
+        time.sleep(pause)
+    raise RuntimeError("Outlook chưa chuyển thư này sang Sent.")

@@ -158,12 +158,11 @@ class SemiAutoQueue:
                         self.progress.sent += 1
                         self._log(mail, "sent", "OK")
                 except ManualCompose as exc:
-                    # Cửa sổ đang mở để gửi/sửa tay — không tính failed, không gửi lại.
+                    # Thư này không xác nhận được. Không dừng hàng — sang agent tiếp theo.
                     mail.status = MailStatus.SKIPPED
                     mail.error = str(exc)
                     self.progress.skipped += 1
                     self._log(mail, "skipped", str(exc))
-                    self.pause()
                 except Exception as exc:  # noqa: BLE001 — log and continue queue
                     mail.status = MailStatus.FAILED
                     mail.error = str(exc)

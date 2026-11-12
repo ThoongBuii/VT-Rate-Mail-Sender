@@ -510,18 +510,15 @@ end tell
         attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
-        Tạo thư, ghi nội dung, mở New Mail, rồi bấm nút Send.
-        Không Tab, không Paste. Không ghi đã gửi nếu cửa sổ vẫn mở.
+        Tạo thư, ghi nội dung, mở New Mail, bấm Send.
+        Đã gửi khi thư rời hộp chờ. Chưa xác nhận thì bỏ qua, không dừng hàng.
         """
         from .mac_hid import (
             _delete_outgoing,
             _write_outgoing_content,
-            claim_outlook_compose,
-            close_compose_by_id,
+            open_compose_by_id,
             send_outgoing,
-            wait_compose_window,
         )
-        from .mac_keylock import keyboard_guard
 
         if not ensure_assistive_access(prompt=True):
             raise RuntimeError(
@@ -561,52 +558,40 @@ end tell
 '''
 
         msg_id = ""
-        with keyboard_guard(pre_focus_s=0.5):
+        try:
             try:
-                try:
-                    msg_id = _run_nsapplescript(create_script).strip()
-                except Exception:  # noqa: BLE001
-                    msg_id = _run_osascript_file(create_script, timeout=30).strip()
-            except RuntimeError as exc:
-                raise RuntimeError(
-                    "Không mở New Mail / gắn To-Cc-Subject.\n"
-                    f"{exc}\n"
-                    "Legacy Outlook = ON · đã login."
-                ) from exc
+                msg_id = _run_nsapplescript(create_script).strip()
+            except Exception:  # noqa: BLE001
+                msg_id = _run_osascript_file(create_script, timeout=30).strip()
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Không tạo được New Mail / gắn To-Cc-Subject.\n"
+                f"{exc}\n"
+                "Legacy Outlook = ON · đã login."
+            ) from exc
 
-            if not msg_id:
-                raise RuntimeError("Không lấy được id New Mail.")
+        if not msg_id:
+            raise RuntimeError("Không lấy được id New Mail.")
 
-            try:
-                _write_outgoing_content(msg_id, prepared)
-            except Exception as exc:  # noqa: BLE001
-                _delete_outgoing(msg_id)
-                raise RuntimeError(
-                    "Không ghi được nội dung thư vào Outlook.\n"
-                    f"{exc}"
-                ) from exc
+        try:
+            _write_outgoing_content(msg_id, prepared)
+        except Exception as exc:  # noqa: BLE001
+            _delete_outgoing(msg_id)
+            raise RuntimeError(
+                "Không ghi được nội dung thư vào Outlook.\n"
+                f"{exc}"
+            ) from exc
 
-            if not wait_compose_window(
-                timeout=1.4, subject_hint=subject, msg_id=msg_id
-            ) and not claim_outlook_compose(
-                subject_hint=subject, msg_id=msg_id
-            ):
-                close_compose_by_id(msg_id)
-                raise RuntimeError(
-                    "New Mail đã tạo nhưng chưa thấy cửa sổ compose.\n"
-                    "Zalo đang giữ focus? Legacy ON · thử lại."
-                )
+        if not open_compose_by_id(msg_id):
+            raise RuntimeError("Không mở được cửa sổ New Mail.")
 
-            try:
-                send_outgoing(msg_id, subject_hint=subject)
-            except Exception as exc:  # noqa: BLE001
-                # Giữ cửa sổ để user gửi tay. Không đóng, không xếp gửi lại.
-                raise ManualCompose(
-                    "Bỏ qua mail này — cửa sổ New Mail vẫn mở để gửi tay.\n"
-                    f"{exc}"
-                ) from exc
-
-            # send thành công → Outlook tự đóng compose. Không close thêm.
+        try:
+            send_outgoing(msg_id, subject_hint=subject)
+        except Exception as exc:  # noqa: BLE001
+            raise ManualCompose(
+                "Chưa xác nhận đã gửi — bỏ qua, sang agent tiếp theo.\n"
+                f"{exc}"
+            ) from exc
 
 
 
