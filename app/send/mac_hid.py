@@ -63,29 +63,40 @@ def _compose_picker_as(subject_hint: str) -> str:
     elif "||" in full:
         tail = full.rsplit("||", 1)[-1].strip()
     needle_tail = _esc_as(tail[:36]) if tail else ""
+    # Đuôi subject có tên agency. Đầu subject trùng cả nước, dễ bấm nhầm cửa sổ thư trước.
+    needle_end = _esc_as((full[-48:] if len(full) > 24 else full).strip())
     return f'''
     set needle to "{needle}"
     set needle2 to "{needle2}"
     set needleTail to "{needle_tail}"
+    set needleEnd to "{needle_end}"
     set targetWin to missing value
 
     try
       set fw to front window
       set fn to name of fw as text
-      if needle is not "" and fn contains needle then
+      if needleEnd is not "" and fn contains needleEnd then
         set targetWin to fw
-      else if needle2 is not "" and fn contains needle2 then
+      else if needleEnd is "" and needle is not "" and fn contains needle then
         set targetWin to fw
-      else if needleTail is not "" and fn contains needleTail then
-        set targetWin to fw
-      else if (fn contains "Untitled") or (fn contains "@") or (fn contains "New Message") or (fn contains "Outgoing") then
-        set targetWin to fw
-      else if (length of fn > 24) and (fn does not contain "Inbox") and (fn does not contain "Sent items") and (fn does not contain "Sent Items") and (fn does not contain "Drafts") and (fn does not contain "Deleted") then
+      else if needleEnd is "" and needleTail is not "" and fn contains needleTail then
         set targetWin to fw
       end if
     end try
 
-    if targetWin is missing value then
+    if targetWin is missing value and needleEnd is not "" then
+      repeat with w in windows
+        try
+          set n to name of w as text
+          if n contains needleEnd then
+            set targetWin to w
+            exit repeat
+          end if
+        end try
+      end repeat
+    end if
+
+    if targetWin is missing value and needleEnd is "" then
       repeat with w in windows
         try
           set n to name of w as text
@@ -97,7 +108,7 @@ def _compose_picker_as(subject_hint: str) -> str:
       end repeat
     end if
 
-    if targetWin is missing value then
+    if targetWin is missing value and needleEnd is "" then
       repeat with w in windows
         try
           set n to name of w as text
@@ -109,7 +120,7 @@ def _compose_picker_as(subject_hint: str) -> str:
       end repeat
     end if
 
-    if targetWin is missing value then
+    if targetWin is missing value and needleEnd is "" then
       repeat with w in windows
         try
           set n to name of w as text
@@ -1035,19 +1046,6 @@ tell application "System Events"
     try
       set spots to spots & groups of targetWin
     end try
-    try
-      set spots to spots & UI elements of targetWin
-    end try
-    try
-      repeat with g in groups of targetWin
-        try
-          set spots to spots & groups of g
-        end try
-        try
-          set spots to spots & UI elements of g
-        end try
-      end repeat
-    end try
     repeat with spot in spots
       try
         repeat with b in buttons of spot
@@ -1104,19 +1102,75 @@ end tell
     return "unknown"
 
 
+def _raise_compose_window(subject_hint: str) -> bool:
+    """Đưa đúng New Mail của thư này lên trước. Chưa mở xong thì trả no."""
+    script = f'''
+tell application "Microsoft Outlook" to activate
+tell application "System Events"
+  tell process "Microsoft Outlook"
+    set frontmost to true
+{_compose_picker_as(subject_hint)}
+    if targetWin is missing value then return "no"
+    try
+      perform action "AXRaise" of targetWin
+    end try
+    try
+      set value of attribute "AXMain" of targetWin to true
+    end try
+    return "yes"
+  end tell
+end tell
+'''
+    try:
+        return _run_nsapplescript(script).strip().lower().startswith("yes")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _press_send_shortcut() -> None:
+    """Cmd+Return thật, cùng phím với nút Send. Không bắn phím giả vào PID."""
+    script = '''
+tell application "System Events"
+  tell process "Microsoft Outlook"
+    set frontmost to true
+    key code 36 using command down
+  end tell
+end tell
+'''
+    try:
+        _run_nsapplescript(script)
+    except Exception:  # noqa: BLE001
+        _cg_cmd_return()
+        _release_modifiers_quiet()
+
+
+def _dispatch_done(msg_id: str) -> bool:
+    return _outgoing_dispatch(msg_id) in {"sent", "gone"}
+
+
 def send_outgoing(msg_id: str, *, subject_hint: str = "") -> None:
-    """Bấm Send. Coi là đã gửi khi thư rời hộp chờ, không nhìn cửa sổ."""
+    """Chờ đúng cửa sổ, bấm Send vài lần. Đã gửi khi thư rời hộp chờ."""
     mid = (msg_id or "").strip()
     if not mid.isdigit():
         raise RuntimeError("Không gửi được thư này.")
-    if not _click_send_button(subject_hint):
-        # Cùng phím tắt với nút Send. Không dùng lệnh send của AppleScript.
-        _cg_cmd_return()
-        time.sleep(0.05)
-        _release_modifiers_quiet()
-    for pause in (0.2, 0.35, 0.5, 0.7, 1.0):
-        state = _outgoing_dispatch(mid)
-        if state in {"sent", "gone"}:
+    raised = False
+    deadline = time.time() + 1.6
+    while time.time() < deadline:
+        if _raise_compose_window(subject_hint):
+            raised = True
+            break
+        time.sleep(0.2)
+    if not raised:
+        raise RuntimeError("Không thấy cửa sổ New Mail để bấm Send.")
+    for _ in range(3):
+        _raise_compose_window(subject_hint)
+        _press_send_shortcut()
+        for pause in (0.3, 0.45):
+            if _dispatch_done(mid):
+                return
+            time.sleep(pause)
+        _click_send_button(subject_hint)
+        if _dispatch_done(mid):
             return
-        time.sleep(pause)
+        time.sleep(0.2)
     raise RuntimeError("Outlook chưa chuyển thư này sang Sent.")
