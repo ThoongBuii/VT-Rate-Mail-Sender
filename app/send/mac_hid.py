@@ -442,75 +442,141 @@ def _restore_clip(clip: list[tuple[str, bytes]]) -> None:
         pb.setData_forType_(NSData.dataWithBytes_length_(raw, len(raw)), ptype)
 
 
-def _copy_rendered_message(html: str) -> list[tuple[str, bytes]]:
-    """Một lần Cmd+C của đúng thư, trả về bản lưu. Cửa sổ trong suốt, không chiếm Outlook."""
-    from AppKit import (  # type: ignore
-        NSBackingStoreBuffered,
-        NSMakeRect,
-        NSPasteboard,
-        NSWindow,
-    )
+def _js_on_webview(web, source: str, timeout: float = 4.0) -> str:
     from Foundation import NSDate, NSRunLoop  # type: ignore
-    from WebKit import WKWebView, WKWebViewConfiguration  # type: ignore
 
+    box: dict = {"result": "", "done": False}
+
+    def _handler(result, _error) -> None:
+        try:
+            box["result"] = "" if result is None else str(result)
+        except Exception:  # noqa: BLE001
+            box["result"] = ""
+        box["done"] = True
+
+    web.evaluateJavaScript_completionHandler_(source, _handler)
+    deadline = time.time() + timeout
+    while not box["done"] and time.time() < deadline:
+        NSRunLoop.currentRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.05))
+    return str(box["result"] or "")
+
+
+def _clip_matches(html: str, plain: str) -> bool:
     from .html_merge import html_visible_text
 
-    fragment = (html or "").strip()
-    if not fragment:
-        raise RuntimeError(
-            "Không copy được nội dung thư trên app.\n"
-            "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
-        )
-    if "<html" not in fragment.lower():
-        page = "<!DOCTYPE html><html><body>" + fragment + "</body></html>"
-    else:
-        page = fragment
+    mark = _compact(html_visible_text(html))[:24]
+    if len(mark) < 8:
+        return False
+    return mark in _compact(plain)
 
-    web = WKWebView.alloc().initWithFrame_configuration_(
-        NSMakeRect(0, 0, 960, 1200),
-        WKWebViewConfiguration.alloc().init(),
-    )
-    win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-        NSMakeRect(-3200, -3200, 960, 1200),
-        0,
-        NSBackingStoreBuffered,
-        False,
-    )
-    win.setReleasedWhenClosed_(False)
-    win.setAlphaValue_(0)
-    win.setIgnoresMouseEvents_(True)
+
+def _copy_from_app_window(html: str) -> list[tuple[str, bytes]] | None:
+    """Cmd+C ngay trên cửa sổ app. Cửa sổ WebKit thứ hai không nhận copy khi app đang mở."""
+    import json
+
     try:
-        win.contentView().addSubview_(web)
-        web.loadHTMLString_baseURL_(page, None)
-        deadline = time.time() + 3
-        while web.isLoading() and time.time() < deadline:
-            NSRunLoop.currentRunLoop().runUntilDate_(
-                NSDate.dateWithTimeIntervalSinceNow_(0.05)
-            )
-        win.orderFrontRegardless()
-        win.makeFirstResponder_(web)
-        NSRunLoop.currentRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.08))
-        web.selectAll_(None)
+        import webview
+        from webview.platforms.cocoa import BrowserView  # type: ignore
+    except Exception:  # noqa: BLE001
+        return None
+    if not getattr(webview, "windows", None):
+        return None
+    browser = BrowserView.instances.get(webview.windows[0].uid)
+    if browser is None:
+        return None
+
+    from AppKit import NSPasteboard  # type: ignore
+    from Foundation import NSDate, NSRunLoop  # type: ignore
+
+    web = browser.webview
+    payload = json.dumps(html or "")
+    select = (
+        "(function(){"
+        f"var html={payload};"
+        "var el=document.getElementById('vt-copy-once');"
+        "if(!el){el=document.createElement('div');el.id='vt-copy-once';"
+        "el.contentEditable='true';"
+        "el.style.cssText='position:absolute;left:-12000px;top:0;width:960px;';"
+        "document.body.appendChild(el);}"
+        "el.innerHTML=html;"
+        "var sel=window.getSelection();"
+        "var range=document.createRange();"
+        "range.selectNodeContents(el);"
+        "sel.removeAllRanges();sel.addRange(range);"
+        "return String((el.innerText||'').length);"
+        "})()"
+    )
+    try:
+        browser.window.makeFirstResponder_(web)
+        length = _js_on_webview(web, select)
+        if not length.isdigit() or int(length) < 8:
+            return None
         web.copy_(None)
         NSRunLoop.currentRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.08))
-    finally:
-        try:
-            win.orderOut_(None)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            web.removeFromSuperview()
-        except Exception:  # noqa: BLE001
-            pass
-
-    plain = NSPasteboard.generalPasteboard().stringForType_("public.utf8-plain-text") or ""
-    mark = _compact(html_visible_text(html))[:32]
-    clip = _snapshot_pasteboard()
-    if len(mark) < 8 or mark not in _compact(plain) or not clip:
-        raise RuntimeError(
-            "Không copy được nội dung thư trên app.\n"
-            "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
+        plain = NSPasteboard.generalPasteboard().stringForType_("public.utf8-plain-text") or ""
+        clip = _snapshot_pasteboard() if _clip_matches(html, plain) else None
+        _js_on_webview(
+            web,
+            "var el=document.getElementById('vt-copy-once');"
+            "if(el)el.innerHTML='';"
+            "var sel=window.getSelection();if(sel)sel.removeAllRanges();'ok'",
         )
+    except Exception:  # noqa: BLE001
+        return None
+    return clip or None
+
+
+def _copy_rendered_message(html: str) -> list[tuple[str, bytes]]:
+    """Một bản copy của thư. Copy trên app không ra thì ghi clipboard HTML, không cắt lượt gửi."""
+    fragment = (html or "").strip()
+    if not fragment:
+        raise RuntimeError("Nội dung thư trống — không gửi.")
+    clip = _copy_from_app_window(fragment)
+    if clip:
+        return clip
+    return _html_clip(fragment)
+
+
+def _html_clip(html: str) -> list[tuple[str, bytes]]:
+    """Clipboard HTML + chữ thường. Không gắn WebArchive tự tạo — Outlook hay bỏ qua paste đó."""
+    import re
+
+    import html as html_lib
+
+    from AppKit import (  # type: ignore
+        NSPasteboard,
+        NSPasteboardTypeHTML,
+        NSPasteboardTypeString,
+    )
+
+    fragment = (html or "").strip()
+    if "<html" not in fragment.lower():
+        wrapped = "<!DOCTYPE html><html><body>" + fragment + "</body></html>"
+    else:
+        wrapped = fragment
+    plain = re.sub(r"(?is)<br\s*/?>", "\n", fragment)
+    plain = re.sub(r"(?is)<[^>]+>", "", plain)
+    plain = html_lib.unescape(plain).strip()
+    types = [NSPasteboardTypeHTML, "public.html", "Apple HTML pasteboard type"]
+    if plain:
+        types.append(NSPasteboardTypeString)
+    pb = NSPasteboard.generalPasteboard()
+    pb.declareTypes_owner_(types, None)
+    wrote = False
+    for ptype in (NSPasteboardTypeHTML, "public.html", "Apple HTML pasteboard type"):
+        try:
+            if pb.setString_forType_(wrapped, ptype):
+                wrote = True
+        except Exception:  # noqa: BLE001
+            continue
+    if plain:
+        try:
+            pb.setString_forType_(plain, NSPasteboardTypeString)
+        except Exception:  # noqa: BLE001
+            pass
+    clip = _snapshot_pasteboard()
+    if not wrote or not clip:
+        raise RuntimeError("Không copy được nội dung thư trên app.")
     return clip
 
 
@@ -542,14 +608,10 @@ def capture_message_clip(html: str) -> list[tuple[str, bytes]]:
                 done.set()
 
         NSOperationQueue.mainQueue().addOperationWithBlock_(_block)
-        if not done.wait(timeout=6):
-            raise RuntimeError(
-                "Không copy được nội dung thư trên app.\n"
-                "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
-            )
-        if box["err"] is not None:
-            raise box["err"]
-        clip = box["clip"]
+        if not done.wait(timeout=8) or box["err"] is not None or not box["clip"]:
+            clip = _html_clip(html)
+        else:
+            clip = box["clip"]
 
     store_clip(key, clip)
     return clip
