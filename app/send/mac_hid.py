@@ -1,10 +1,8 @@
-"""Mac — đưa nội dung vào New Mail rồi mới gửi.
+"""Mac — ghi nội dung vào thư, mở New Mail, rồi gửi.
 
-Ô soạn WebView bỏ qua clipboard do app tạo (RTF/HTML/WebArchive đều không vào thân thư).
-Nội dung ghi thẳng vào thuộc tính content của outgoing message, rồi mới mở cửa sổ.
-Chữ ký không nằm trong content: thư trống vẫn hiện AMBER. Ghi content không đè chữ ký.
-
-Chỉ Cmd+Return khi content đã có đoạn mở đầu của thư. Không gửi nếu chưa có.
+Ô soạn nhận HTML khi ghi vào content trước lúc mở cửa sổ. Chữ ký AMBER
+do Outlook gắn lúc mở, không nằm trong content. Không Tab, không Paste.
+Gửi bằng lệnh send của đúng thư đó.
 """
 
 from __future__ import annotations
@@ -1019,40 +1017,17 @@ def _content_has_body(msg_id: str, marker: str) -> str:
     return "no"
 
 
-def paste_and_send_keyboard(
-    *,
-    subject_hint: str = "",
-    msg_id: str = "",
-    already_raised: bool = False,
-    html: str = "",
-    clip: list | None = None,
-) -> None:
-    """Cửa sổ đã mở với content. Kiểm tra đoạn thư rồi mới Cmd+Return."""
-    del clip
-    if _outlook_pid() <= 0:
+def send_outgoing(msg_id: str) -> None:
+    """Gửi đúng New Mail đang mở. Không Tab, không Paste, không Cmd+Return."""
+    mid = (msg_id or "").strip()
+    if not mid.isdigit():
         raise RuntimeError(
-            "Outlook không đang chạy cùng app.\n"
-            "Không gửi — tránh mail không có nội dung."
+            "Không gửi được thư này.\n"
+            "Cửa sổ New Mail vẫn mở để gửi tay."
         )
-    focus_subject_carefully(
-        subject_hint=subject_hint, msg_id=msg_id, already_raised=already_raised
-    )
-    if not (html or "").strip():
-        raise RuntimeError(
-            "Chưa có nội dung thư.\n"
-            "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
-        )
-    marker = _body_marker(html)
-    landed = _content_has_body(msg_id, marker)
-    if landed == "no":
-        _write_outgoing_content(msg_id, html)
-        time.sleep(0.2)
-        landed = _content_has_body(msg_id, marker)
-    if landed == "no":
-        raise RuntimeError(
-            "Đã mở thư nhưng nội dung soạn chưa vào.\n"
-            "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
-        )
-    _cg_cmd_return()
-    time.sleep(0.05)
-    _release_modifiers_quiet()
+    script = f'''
+tell application "Microsoft Outlook"
+  send outgoing message id {mid}
+end tell
+'''
+    _run_nsapplescript(script)

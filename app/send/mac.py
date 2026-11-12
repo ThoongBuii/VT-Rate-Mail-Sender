@@ -510,15 +510,15 @@ end tell
         attachment: Optional[Path | list[Path]] = None,
     ) -> None:
         """
-        Theo đúng msg_id: tạo → claim → paste vào body → gửi khi nội dung đã vào thư.
-        Không Cmd+W lan sang New Mail khác.
+        Tạo thư, ghi nội dung, mở New Mail, rồi send đúng id đó.
+        Không Tab, không Paste. Không Cmd+W lan sang New Mail khác.
         """
         from .mac_hid import (
             _delete_outgoing,
             _write_outgoing_content,
             claim_outlook_compose,
             close_compose_by_id,
-            paste_and_send_keyboard,
+            send_outgoing,
             wait_compose_window,
         )
         from .mac_keylock import keyboard_guard
@@ -598,21 +598,15 @@ end tell
                 )
 
             try:
-                paste_and_send_keyboard(
-                    subject_hint=subject,
-                    msg_id=msg_id,
-                    already_raised=True,
-                    html=prepared,
-                )
+                send_outgoing(msg_id)
             except Exception as exc:  # noqa: BLE001
-                # Giữ cửa sổ để user gửi/sửa tay. Không đóng, không xếp gửi lại.
+                # Giữ cửa sổ để user gửi tay. Không đóng, không xếp gửi lại.
                 raise ManualCompose(
-                    "Bỏ qua mail này — cửa sổ New Mail vẫn mở để gửi và sửa tay.\n"
+                    "Bỏ qua mail này — cửa sổ New Mail vẫn mở để gửi tay.\n"
                     f"{exc}"
                 ) from exc
 
-            # Cmd+Return thành công → Outlook tự đóng compose. Không verify / không close thêm
-            # (close saving no ngay sau Send có thể huỷ mail đang gửi).
+            # send thành công → Outlook tự đóng compose. Không close thêm.
 
 
 
