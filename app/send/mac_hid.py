@@ -427,19 +427,71 @@ def _snapshot_pasteboard() -> list[tuple[str, bytes]]:
     return out
 
 
-def _restore_clip(clip: list[tuple[str, bytes]]) -> None:
-    """Đặt lại đúng bản đã lưu. Không copy mới."""
-    from AppKit import NSData, NSPasteboard  # type: ignore
+def _place_saved_message(html: str) -> None:
+    """Đặt nội dung đã lưu lên clipboard dạng RTF + HTML + chữ.
 
-    if not clip:
+    WebArchive tự ghép khiến ô soạn bỏ qua Paste. RTF là kiểu body Outlook nhận.
+    """
+    import html as html_lib
+    import re
+
+    from AppKit import (  # type: ignore
+        NSAttributedString,
+        NSData,
+        NSPasteboard,
+        NSPasteboardTypeHTML,
+        NSPasteboardTypeRTF,
+        NSPasteboardTypeString,
+    )
+
+    fragment = (html or "").strip()
+    if not fragment:
         raise RuntimeError(
             "Chưa có bản copy nội dung thư.\n"
             "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
         )
+    if "<html" not in fragment.lower():
+        wrapped = "<!DOCTYPE html><html><body>" + fragment + "</body></html>"
+    else:
+        wrapped = fragment
+    plain = re.sub(r"(?is)<br\s*/?>", "\n", fragment)
+    plain = re.sub(r"(?is)<[^>]+>", "", plain)
+    plain = html_lib.unescape(plain).strip()
+
+    rtf = None
+    try:
+        raw = wrapped.encode("utf-8")
+        data = NSData.dataWithBytes_length_(raw, len(raw))
+        attr, _info, err = NSAttributedString.alloc().initWithData_options_documentAttributes_error_(
+            data,
+            {"DocumentType": "NSHTML", "CharacterEncoding": 4},
+            None,
+            None,
+        )
+        if attr is not None and err is None and attr.length() > 0:
+            rtf, _rerr = attr.dataFromRange_documentAttributes_error_(
+                (0, attr.length()),
+                {"DocumentType": "NSRTF"},
+                None,
+            )
+    except Exception:  # noqa: BLE001
+        rtf = None
+
+    types: list[str] = []
+    if rtf is not None:
+        types.extend([NSPasteboardTypeRTF, "NeXT Rich Text Format v1.0 pasteboard type"])
+    types.extend([NSPasteboardTypeHTML, "public.html", "Apple HTML pasteboard type"])
+    if plain:
+        types.append(NSPasteboardTypeString)
     pb = NSPasteboard.generalPasteboard()
-    pb.declareTypes_owner_([ptype for ptype, _raw in clip], None)
-    for ptype, raw in clip:
-        pb.setData_forType_(NSData.dataWithBytes_length_(raw, len(raw)), ptype)
+    pb.declareTypes_owner_(types, None)
+    if rtf is not None:
+        pb.setData_forType_(rtf, NSPasteboardTypeRTF)
+        pb.setData_forType_(rtf, "NeXT Rich Text Format v1.0 pasteboard type")
+    for ptype in (NSPasteboardTypeHTML, "public.html", "Apple HTML pasteboard type"):
+        pb.setString_forType_(wrapped, ptype)
+    if plain:
+        pb.setString_forType_(plain, NSPasteboardTypeString)
 
 
 def _js_on_webview(web, source: str, timeout: float = 4.0) -> str:
@@ -638,8 +690,8 @@ def _paste_keystroke() -> None:
         lock.set_enabled(True)
 
 
-def _paste_menu() -> bool:
-    """Edit → Paste. Lệnh menu, không đi qua tap phím."""
+def _paste_menu_once() -> str:
+    """Edit → Paste khi lệnh đã bật. Không dùng phím V — Simple Telex nuốt Cmd+V."""
     script = '''
 tell application "System Events"
   tell process "Microsoft Outlook"
@@ -653,18 +705,40 @@ tell application "System Events"
               click mi
               return "yes"
             end if
+            return "disabled"
           end try
         end repeat
       end try
     end repeat
-    return "no"
+    return "no-menu"
   end tell
 end tell
 '''
     try:
-        return _run_nsapplescript(script).strip().lower().startswith("yes")
+        return (_run_nsapplescript(script) or "").strip().lower() or "no-menu"
     except Exception:  # noqa: BLE001
-        return False
+        return "no-menu"
+
+
+def _paste_when_ready() -> str:
+    """Đợi Paste bật rồi bấm. Chưa bật thì Cmd+V khi Outlook đang trước mặt."""
+    if not _outlook_is_frontmost():
+        try:
+            _run_nsapplescript(
+                'tell application "System Events" to tell process "Microsoft Outlook" '
+                "to set frontmost to true"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    last = "no-menu"
+    deadline = time.time() + 1.0
+    while time.time() < deadline:
+        last = _paste_menu_once()
+        if last == "yes":
+            return last
+        time.sleep(0.12)
+    _paste_keystroke()
+    return last
 
 
 def _body_marker(html: str) -> str:
@@ -924,19 +998,19 @@ def paste_and_send_keyboard(
             "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
         )
 
-    if not clip:
+    if not (html or "").strip() and not clip:
         raise RuntimeError(
             "Chưa có bản copy nội dung thư.\n"
             "Không gửi — cửa sổ New Mail vẫn mở để sửa tay."
         )
     before = _outgoing_plain(msg_id)
     marker = _body_marker(html)
-    _restore_clip(clip)
-    _paste_keystroke()
+    _place_saved_message(html)
+    _paste_when_ready()
     landed = _wait_landed(msg_id, marker, before)
     if landed == "no":
-        _restore_clip(clip)
-        _paste_menu()
+        _place_saved_message(html)
+        _paste_keystroke()
         time.sleep(0.4)
         landed = _body_landed(msg_id, marker, before)
     if landed == "no":
